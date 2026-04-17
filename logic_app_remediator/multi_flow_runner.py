@@ -1,14 +1,5 @@
 """
 Multi-workflow failed-run orchestration via Azure Log Analytics (AzureDiagnostics).
-
-Queries failed Logic App runs from a Log Analytics workspace, then delegates each
-row to the existing ``run_remediation()`` — no changes to core remediation logic.
-
-Prerequisites:
-  - A Log Analytics workspace receiving Logic Apps diagnostic logs (AzureDiagnostics).
-  - Caller identity with ``Log Analytics Reader`` (query) and workflow permissions
-    for ``run_remediation`` (read runs + optional write for remediation).
-  - ``LOG_ANALYTICS_WORKSPACE_ID`` env var OR pass ``workspace_id`` explicitly.
 """
 
 from __future__ import annotations
@@ -26,12 +17,19 @@ from azure.monitor.query import LogsQueryClient, LogsQueryStatus
 from logic_app_remediator.agent import run_remediation
 from logic_app_remediator.config import Settings, get_settings
 
+# Set logger to only show warnings and errors
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.WARNING)
+
+# Suppress Azure SDK verbose logging
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
+logging.getLogger("azure.identity").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 # Schema probe query (requested) + robust failed-runs query.
 _SCHEMA_PROBE_KUSTO = "AzureDiagnostics | take 1"
 
-# Robust query: avoid hardcoded columns by using column_ifexists and _ResourceId parsing.
+# Robust query with all requested fields
 _BASE_KUSTO = """
 AzureDiagnostics
 | extend _rid = tostring(column_ifexists("_ResourceId", ""))
@@ -55,6 +53,15 @@ AzureDiagnostics
             extract(@"/runs/([^/]+)", 1, _rid)
         )
     )
+| extend _trigger =
+    tostring(
+        coalesce(
+            column_ifexists("resource_triggerName_s", ""),
+            column_ifexists("triggerName_s", ""),
+            column_ifexists("triggerName", ""),
+            column_ifexists("TriggerName", "")
+        )
+    )
 | extend _error_message =
     tostring(
         coalesce(
@@ -73,11 +80,22 @@ AzureDiagnostics
             column_ifexists("Code", "")
         )
     )
+| extend _code = tostring(column_ifexists("code_s", column_ifexists("Code", "")))
 | where TimeGenerated > ago({hours}h)
 | where _status =~ "Failed"
 | where _resourceType == "WORKFLOWS/RUNS" or _rid has "/providers/microsoft.logic/workflows/" and _rid has "/runs/"
 | where isnotempty(_workflow) and isnotempty(_runId)
-| project TimeGenerated, _ResourceId=_rid, workflow_name=_workflow, run_id=_runId, error_code_s=_error_code, error_message_s=_error_message
+| project 
+    TimeGenerated,
+    Level = column_ifexists("Level", ""),
+    status_s = _status,
+    resource_runId_s = _runId,
+    resource_workflowName_s = _workflow,
+    resource_triggerName_s = _trigger,
+    code_s = _code,
+    error_code_s = _error_code,
+    error_message_s = _error_message,
+    _ResourceId = _rid
 | order by TimeGenerated desc
 | take {top_n}
 """
@@ -134,8 +152,7 @@ def query_failed_runs_from_workspace(
     settings: Optional[Settings] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Execute the AzureDiagnostics query and return list of dict rows:
-    workflowName_s, resource_runId_s, TimeGenerated (when present).
+    Execute the AzureDiagnostics query and return list of dict rows with all fields.
     """
     settings = settings or get_settings()
     cred = _credential_for_logs(settings)
@@ -149,7 +166,7 @@ def query_failed_runs_from_workspace(
         hours,
     )
     try:
-        # Schema probe (requested): helps debugging schema drift across workspaces.
+        # Schema probe: helps debugging schema drift across workspaces.
         schema_probe = client.query_workspace(
             workspace_id=workspace_id,
             query=_SCHEMA_PROBE_KUSTO,
@@ -185,65 +202,67 @@ def query_failed_runs_from_workspace(
     return rows_out
 
 
-def _normalize_row(row: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
+def _normalize_row(row: Dict[str, Any]) -> Optional[Tuple[str, str, str, str, str, str, str]]:
     """
-    Extract (workflow_name, run_id, error_message_s) from a query row.
-    Supports robust query aliases and a few legacy variants.
+    Extract (workflow_name, run_id, trigger_name, level, status, error_code, error_message) from query row.
     """
     wf = (
-        row.get("workflow_name")
-        or row.get("resource_workflowName_s")
+        row.get("resource_workflowName_s")
+        or row.get("workflow_name")
         or row.get("workflowName_s")
         or row.get("workflowName")
-        or row.get("WorkflowName_s")
     )
     rid = (
-        row.get("run_id")
-        or row.get("resource_runId_s")
+        row.get("resource_runId_s")
+        or row.get("run_id")
         or row.get("resource_runId")
         or row.get("Resource_runId_s")
     )
-    err_msg = row.get("error_message_s") or row.get("error_message")
+    trigger = (
+        row.get("resource_triggerName_s")
+        or row.get("triggerName_s")
+        or row.get("triggerName")
+        or row.get("TriggerName")
+        or ""
+    )
+    level = row.get("Level") or ""
+    status = row.get("status_s") or ""
+    error_code = row.get("error_code_s") or row.get("code_s") or ""
+    error_msg = row.get("error_message_s") or row.get("error_message") or ""
+    
     if wf is None or rid is None:
         return None
     wf_s, rid_s = str(wf).strip(), str(rid).strip()
     if not wf_s or not rid_s:
         return None
-    return wf_s, rid_s, str(err_msg or "")
+    return (wf_s, rid_s, str(trigger), str(level), str(status), str(error_code), str(error_msg))
 
 
 def _summarize_remediation_result(
-    workflow: str, run_id: str, log_error_message: str, result: Dict[str, Any]
+    workflow: str, 
+    run_id: str, 
+    trigger_name: str,
+    level: str,
+    status: str,
+    error_code: str,
+    error_message: str,
+    result: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Shape one row for the consolidated JSON report."""
-    exact_error_message = result.get("exact_error_message", "") or ""
-    exact_error_code = result.get("exact_error_code", "") or ""
-    exact_error_in_flow = result.get("exact_error_in_flow", "") or ""
-    # Prefer RAG/live-flow statement, then code + message, then message.
-    if exact_error_in_flow:
-        exact_error = exact_error_in_flow
-    elif exact_error_code and exact_error_message:
-        exact_error = f"{exact_error_code}: {exact_error_message}"
-    else:
-        exact_error = exact_error_message
-
+    """
+    Shape one row for the consolidated JSON report with only relevant fields.
+    """
     return {
-        "workflow": workflow,
-        "run_id": run_id,
-        "log_error_code_s": result.get("log_error_code_s", ""),
-        "log_error_message_s": log_error_message,
-        "status": result.get("status", ""),
-        "error_type": result.get("error_type", ""),
-        "exact_error": exact_error,
-        "exact_error_in_flow": exact_error_in_flow,
-        "exact_error_code": exact_error_code,
-        "exact_error_message": exact_error_message,
-        "root_cause": result.get("root_cause", ""),
-        "fix_applied": result.get("fix_applied", ""),
-        "recommendation": result.get("recommendation", ""),
-        "failed_action": result.get("failed_action"),
-        "arm_error_code": result.get("arm_error_code"),
-        "detail": result.get("detail"),
+        "Level": level,
+        "status_s": status,
+        "resource_runId_s": run_id,
+        "resource_workflowName_s": workflow,
+        "resource_triggerName_s": trigger_name,
+        "code_s": result.get("log_error_code_s", error_code),
+        "error_code_s": error_code,
+        "error_message_s": error_message,
+        "remediation_status": result.get("status", ""),
+        "fix_applied": result.get("fix_applied", "none"),
+        "remediation_detail": result.get("detail") if result.get("detail") else None
     }
 
 
@@ -264,27 +283,6 @@ def process_failed_runs(
 ) -> Dict[str, Any]:
     """
     Discover failed runs from Log Analytics and run the existing remediation agent per row.
-
-    Parameters
-    ----------
-    subscription_id, resource_group
-        Passed through to ``run_remediation`` for each failed run.
-    workspace_id
-        Log Analytics workspace GUID. If omitted, uses env ``LOG_ANALYTICS_WORKSPACE_ID``.
-    hours
-        Lookback window for ``ago(Nh)`` in the Kusto query (default 1, max 168).
-    top_n
-        Maximum rows returned from the query (default 100, capped at 5000).
-    max_concurrency
-        Parallel remediation calls (default 4). Set to 1 for strictly sequential.
-    settings, backup_dir, trigger_name
-        Forwarded to ``run_remediation`` unchanged.
-    remediation_fn
-        Injectable hook for tests; defaults to ``run_remediation``.
-
-    Returns
-    -------
-    Consolidated report dict with total_failed_runs, processed, results, errors_skipped.
     """
     settings = settings or get_settings()
     ws = (workspace_id or os.getenv("LOG_ANALYTICS_WORKSPACE_ID") or "").strip()
@@ -309,27 +307,23 @@ def process_failed_runs(
             "detail": str(ex),
         }
 
-    # De-duplicate (workflow, run_id) while preserving newest-first order from query.
+    # De-duplicate (workflow, run_id) while preserving newest-first order from query
     seen: Set[Tuple[str, str]] = set()
-    tasks: List[Tuple[str, str, str, str]] = []
+    tasks: List[Tuple[str, str, str, str, str, str, str]] = []
     for row in rows:
         parsed = _normalize_row(row)
         if not parsed:
             logger.debug("Skipping unparsable row: %s", row)
             continue
-        wf, rid, log_msg = parsed
-        log_code = str(row.get("error_code_s") or row.get("error_code") or "")
+        wf, rid, trigger, level, status, error_code, error_msg = parsed
         key = (wf, rid)
         if key in seen:
             continue
         seen.add(key)
-        tasks.append((wf, rid, log_msg, log_code))
+        tasks.append((wf, rid, trigger, level, status, error_code, error_msg))
         logger.info(
-            "Detected failed run from logs: workflow=%s run_id=%s error_code_s=%s error_message_s=%s",
-            wf,
-            rid,
-            log_code,
-            log_msg,
+            "Detected failed run from logs: workflow=%s run_id=%s trigger=%s error_code=%s",
+            wf, rid, trigger, error_code,
         )
 
     total_failed = len(tasks)
@@ -351,48 +345,37 @@ def process_failed_runs(
                 "run_remediation failed for workflow=%s run_id=%s", workflow_name, run_id
             )
             return {
-                "workflow": workflow_name,
-                "run_id": run_id,
                 "status": "runner_error",
-                "error_type": "",
-                "root_cause": "",
                 "fix_applied": "none",
-                "recommendation": "",
                 "detail": str(ex),
             }
 
     workers = max(1, int(max_concurrency))
     if workers == 1 or total_failed <= 1:
-        for wf, rid, log_msg, log_code in tasks:
+        for wf, rid, trigger, level, status, error_code, error_msg in tasks:
             out = _one(wf, rid)
-            out = dict(out)
-            out.setdefault("log_error_code_s", log_code)
-            results.append(_summarize_remediation_result(wf, rid, log_msg, out))
+            results.append(_summarize_remediation_result(wf, rid, trigger, level, status, error_code, error_msg, out))
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             future_map = {
-                pool.submit(_one, wf, rid): (wf, rid, log_msg, log_code) for wf, rid, log_msg, log_code in tasks
+                pool.submit(_one, wf, rid): (wf, rid, trigger, level, status, error_code, error_msg) 
+                for wf, rid, trigger, level, status, error_code, error_msg in tasks
             }
             for fut in as_completed(future_map):
-                wf, rid, log_msg, log_code = future_map[fut]
+                wf, rid, trigger, level, status, error_code, error_msg = future_map[fut]
                 try:
                     out = fut.result()
                 except Exception as ex:
                     logger.exception("Future failed for workflow=%s run_id=%s", wf, rid)
                     out = {
                         "status": "runner_error",
-                        "error_type": "",
-                        "root_cause": "",
                         "fix_applied": "none",
-                        "recommendation": "",
                         "detail": str(ex),
                     }
-                out = dict(out)
-                out.setdefault("log_error_code_s", log_code)
-                results.append(_summarize_remediation_result(wf, rid, log_msg, out))
+                results.append(_summarize_remediation_result(wf, rid, trigger, level, status, error_code, error_msg, out))
 
     # Preserve deterministic order by workflow + run_id for reporting
-    results.sort(key=lambda x: (x.get("workflow") or "", x.get("run_id") or ""))
+    results.sort(key=lambda x: (x.get("resource_workflowName_s") or "", x.get("resource_runId_s") or ""))
 
     return {
         "total_failed_runs": total_failed,
@@ -433,25 +416,26 @@ def collect_failed_run_errors(
         parsed = _normalize_row(row)
         if not parsed:
             continue
-        wf, rid, msg = parsed
+        wf, rid, trigger, level, status, error_code, error_msg = parsed
         key = (wf, rid)
         if key in seen:
             continue
         seen.add(key)
         logger.info(
-            "Detected failed run from logs: workflow=%s run_id=%s error_message_s=%s",
-            wf,
-            rid,
-            msg,
+            "Detected failed run from logs: workflow=%s run_id=%s error_code=%s error_message=%s",
+            wf, rid, error_code, error_msg,
         )
-        log_code = str(row.get("error_code_s") or row.get("error_code") or "")
         results.append(
             {
-                "workflow": wf,
-                "run_id": rid,
-                "log_error_code_s": log_code,
-                "log_error_message_s": msg,
-                "status": "detected_from_logs",
+                "Level": level,
+                "status_s": status,
+                "resource_runId_s": rid,
+                "resource_workflowName_s": wf,
+                "resource_triggerName_s": trigger,
+                "code_s": error_code,
+                "error_code_s": error_code,
+                "error_message_s": error_msg,
+                "remediation_status": "detected_from_logs",
             }
         )
 

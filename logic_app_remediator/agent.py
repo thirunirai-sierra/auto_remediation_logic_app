@@ -28,7 +28,9 @@ from logic_app_remediator.remediation import (
     strip_read_only_for_put,
 )
 
+# Set logger to only show warnings and errors
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.WARNING)
 
 # Scope / control actions: failure here is usually a rollup; real fix targets leaf actions.
 _CONTAINER_TYPES = frozenset(
