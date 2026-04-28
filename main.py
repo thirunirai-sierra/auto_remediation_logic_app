@@ -1,15 +1,16 @@
-"""Project entry point.
-
-Run with:
-  python main.py [args]
-"""
+"""Project entry point."""
 
 from __future__ import annotations
 
 import sys
 
-from cli import main
+from cli import main as remediation_main
+from agents.Knowledge_agent.cli import main as knowledge_main
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    # Route to knowledge CLI if first arg is 'kb'
+    if len(sys.argv) > 1 and sys.argv[1] == "kb":
+        raise SystemExit(knowledge_main(sys.argv[2:]))
+    else:
+        raise SystemExit(remediation_main(sys.argv[1:]))

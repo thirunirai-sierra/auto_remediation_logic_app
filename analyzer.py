@@ -302,7 +302,7 @@ def _finalize_analysis(
     out = dict(base)
     if settings.rag_enabled:
         if settings.azure_openai_endpoint and settings.azure_openai_api_key:
-            from logic_app_remediator import rag
+            from logic_app_auto import rag
 
             rag_out = rag.analyze_with_rag(
                 error_json, flow_context or {}, out, settings
