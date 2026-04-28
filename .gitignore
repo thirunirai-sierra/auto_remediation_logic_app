@@ -1,35 +1,36 @@
+.env
+.env.*
+
 # Python cache and bytecode
 __pycache__/
 *.py[cod]
-*.pyo
+*$py.class
 
 # Virtual environments
 .venv/
 venv/
+env/
 
-# Environment files
-.env
-.env.*
-
-# Logs
-*.log
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# IDE / editor
-.vscode/
-.idea/
-
-# Build / packaging artifacts
-build/
+# Build/test artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+htmlcov/
 dist/
+build/
 *.egg-info/
 
-# Test / coverage artifacts
-.coverage
-htmlcov/
+# Logs and runtime artifacts
+*.log
+workflow_backup_*.json
+
+# OS/editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
 
 # Temporary folders
 tmp/
@@ -37,4 +38,5 @@ output/
 
 # Keep required tracked files explicit
 !requirements.txt
-!logic_app_remediator/knowledge/*.jsonl
+!requirement1.txt
+!agent/knowledge/*.jsonl
