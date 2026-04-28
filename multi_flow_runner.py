@@ -14,8 +14,8 @@ from azure.core.exceptions import HttpResponseError
 from azure.identity import ClientSecretCredential
 from azure.monitor.query import LogsQueryClient, LogsQueryStatus
 
-from logic_app_remediator.agent import run_remediation
-from logic_app_remediator.config import Settings, get_settings
+from agent import run_remediation
+from config import Settings, get_settings
 
 # Set logger to only show warnings and errors
 logger = logging.getLogger(__name__)

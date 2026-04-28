@@ -6,7 +6,7 @@ import copy
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from logic_app_remediator.config import Settings
+from config import Settings
 
 
 def _fix_compose_add_string_expression(

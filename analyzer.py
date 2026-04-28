@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from logic_app_remediator.config import Settings, get_settings
+from config import Settings, get_settings
 
 
 def _infer_http_status_from_text(text: str) -> Optional[int]:

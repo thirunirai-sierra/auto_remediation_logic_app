@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from logic_app_remediator.config import Settings
+from config import Settings
 
 logger = logging.getLogger(__name__)
 

@@ -18,9 +18,9 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("msal").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
 
-from logic_app_remediator.agent import run_remediation
-from logic_app_remediator.config import get_settings
-from logic_app_remediator.multi_flow_runner import (
+from agent import run_remediation
+from config import get_settings
+from multi_flow_runner import (
     collect_failed_run_errors,
     process_failed_runs,
 )

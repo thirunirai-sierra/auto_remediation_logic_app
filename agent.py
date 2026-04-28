@@ -11,8 +11,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from logic_app_remediator.analyzer import analyze_error
-from logic_app_remediator.api import (
+from analyzer import analyze_error
+from api import (
     find_manual_or_recurrence_trigger,
     get_run,
     get_workflow,
@@ -20,9 +20,9 @@ from logic_app_remediator.api import (
     post_trigger_run,
     put_workflow,
 )
-from logic_app_remediator.auth import get_arm_token
-from logic_app_remediator.config import Settings, get_settings
-from logic_app_remediator.remediation import (
+from auth import get_arm_token
+from config import Settings, get_settings
+from remediation import (
     apply_remediation_patch,
     locate_action_node,
     strip_read_only_for_put,
@@ -343,20 +343,24 @@ def run_remediation(
             **_analysis_extras(analysis),
         }
 
-    backup_dir = backup_dir or os.getcwd()
-    os.makedirs(backup_dir, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_enabled = bool(backup_dir)
+    ts: Optional[str] = None
+    if backup_enabled:
+        os.makedirs(backup_dir, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     last_result: Dict[str, Any] = {}
     force_wildcard_etag = False
     for attempt in range(1, settings.max_remediation_attempts + 1):
         wf = get_workflow(token, subscription_id, resource_group, workflow_name)
-        backup_path = os.path.join(
-            backup_dir, f"workflow_backup_{workflow_name}_{ts}_a{attempt}.json"
-        )
-        with open(backup_path, "w", encoding="utf-8") as f:
-            json.dump(wf, f, indent=2)
-        logger.info("Backed up workflow to %s", backup_path)
+        backup_path: Optional[str] = None
+        if backup_enabled and backup_dir and ts:
+            backup_path = os.path.join(
+                backup_dir, f"workflow_backup_{workflow_name}_{ts}_a{attempt}.json"
+            )
+            with open(backup_path, "w", encoding="utf-8") as f:
+                json.dump(wf, f, indent=2)
+            logger.info("Backed up workflow to %s", backup_path)
 
         put_body = strip_read_only_for_put(wf)
         etag = "*" if force_wildcard_etag else wf.get("etag")
