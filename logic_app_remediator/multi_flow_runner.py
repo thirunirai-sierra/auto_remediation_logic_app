@@ -262,7 +262,13 @@ def _summarize_remediation_result(
         "error_message_s": error_message,
         "remediation_status": result.get("status", ""),
         "fix_applied": result.get("fix_applied", "none"),
-        "remediation_detail": result.get("detail") if result.get("detail") else None
+        "remediation_detail": result.get("detail") if result.get("detail") else None,
+        "error_location": result.get("error_location"),
+        "action_type": result.get("action_type"),
+        "root_cause": result.get("root_cause"),
+        "exact_issue": result.get("exact_issue"),
+        "solution": result.get("solution"),
+        "rca_confidence": result.get("confidence"),
     }
 
 

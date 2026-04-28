@@ -22,6 +22,7 @@ from logic_app_remediator.api import (
 )
 from logic_app_remediator.auth import get_arm_token
 from logic_app_remediator.config import Settings, get_settings
+from logic_app_remediator.rca.engine import generate_rca, generate_rca_from_error
 from logic_app_remediator.remediation import (
     apply_remediation_patch,
     locate_action_node,
@@ -244,6 +245,22 @@ def _analysis_extras(analysis: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _rca_extras(rca: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        k: rca.get(k)
+        for k in (
+            "error_location",
+            "action_type",
+            "error_code",
+            "root_cause",
+            "exact_issue",
+            "solution",
+            "confidence",
+        )
+        if rca.get(k) is not None
+    }
+
+
 def _extract_arm_error_code(resp_text: str) -> Optional[str]:
     if not resp_text:
         return None
@@ -307,6 +324,7 @@ def run_remediation(
     flow_context = _build_flow_context(
         failed, workflow_name, run_id, definition_early, action_name
     )
+    rca = generate_rca(actions, flow_context=flow_context)
     analysis = analyze_error(error_json, settings, flow_context=flow_context)
     error_type = analysis.get("error_type") or "unknown"
 
@@ -340,6 +358,7 @@ def run_remediation(
             "workflow_run_status": run_status,
             "failed_action": action_name,
             "recommendation": analysis.get("recommendation"),
+            **_rca_extras(rca),
             **_analysis_extras(analysis),
         }
 
@@ -377,6 +396,7 @@ def run_remediation(
                 "failed_action": action_name,
                 "detail": str(ex),
                 "backup_path": backup_path,
+                **_rca_extras(rca),
                 **_analysis_extras(analysis),
             }
 
@@ -401,6 +421,13 @@ def run_remediation(
             if he.response is not None and he.response.text:
                 resp_text = he.response.text[:1000]
             arm_code = _extract_arm_error_code(resp_text)
+            deploy_rca = generate_rca_from_error(
+                error_code=arm_code or str(getattr(he.response, "status_code", "")),
+                error_message=resp_text or str(he),
+                error_location=workflow_name,
+                action_type="workflow_put",
+                flow_context=flow_context,
+            )
             logger.warning(
                 "PUT workflow failed (attempt %s): %s body=%s",
                 attempt,
@@ -419,6 +446,7 @@ def run_remediation(
                     "arm_error_code": arm_code,
                     "backup_path": backup_path,
                     "http_status": getattr(he.response, "status_code", None),
+                    **_rca_extras(deploy_rca),
                     **_analysis_extras(analysis),
                 }
             if attempt < settings.max_remediation_attempts and he.response is not None:
@@ -439,6 +467,7 @@ def run_remediation(
                 "error_body": resp_text,
                 "backup_path": backup_path,
                 "http_status": getattr(he.response, "status_code", None),
+                **_rca_extras(deploy_rca),
                 **_analysis_extras(analysis),
             }
 
@@ -469,6 +498,31 @@ def run_remediation(
             else:
                 new_run_status = f"trigger_http_{resp.status_code}"
                 logger.warning("Trigger run response: %s %s", resp.status_code, resp.text[:500])
+                trig_body = resp.text[:1000] if resp.text else ""
+                trig_code = _extract_arm_error_code(trig_body) or str(resp.status_code)
+                trigger_rca = generate_rca_from_error(
+                    error_code=trig_code,
+                    error_message=trig_body,
+                    error_location=trig,
+                    action_type="trigger",
+                    flow_context=flow_context,
+                )
+                fix_desc = f"{analysis.get('fix_type')} on {action_name}"
+                return {
+                    "run_id": run_id,
+                    "error_type": error_type,
+                    "fix_applied": fix_desc,
+                    "status": "trigger_failed",
+                    "workflow_run_status": run_status,
+                    "failed_action": action_name,
+                    "backup_path": backup_path,
+                    "new_trigger_status": new_run_status,
+                    "new_run_id": None,
+                    "remediation_attempt": attempt,
+                    "recommendation": analysis.get("recommendation"),
+                    **_rca_extras(trigger_rca),
+                    **_analysis_extras(analysis),
+                }
         else:
             logger.warning("No trigger found; workflow updated but not re-run.")
 
@@ -485,6 +539,7 @@ def run_remediation(
             "new_run_id": new_run_id,
             "remediation_attempt": attempt,
             "recommendation": analysis.get("recommendation"),
+            **_rca_extras(rca),
             **_analysis_extras(analysis),
         }
         logger.info("Result: %s", json.dumps(last_result, default=str))

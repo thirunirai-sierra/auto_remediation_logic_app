@@ -1,1 +1,40 @@
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment files
 .env
+.env.*
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE / editor
+.vscode/
+.idea/
+
+# Build / packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Test / coverage artifacts
+.coverage
+htmlcov/
+
+# Temporary folders
+tmp/
+output/
+
+# Keep required tracked files explicit
+!requirements.txt
+!logic_app_remediator/knowledge/*.jsonl
