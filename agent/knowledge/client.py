@@ -17,16 +17,37 @@ class HanaClient:
 
     def connect(self) -> None:
         """Establish connection to HANA."""
-        self._conn = dbapi.connect(
-            address=self.config.hana_host,
-            port=self.config.hana_port,
-            user=self.config.hana_user,
-            password=self.config.hana_password,
-            encrypt=True,
-            sslValidateCertificate=False,
-        )
+        base_params = {
+            "address": str(self.config.hana_host).strip().strip('"'),
+            "port": int(self.config.hana_port),
+            "user": str(self.config.hana_user).strip().strip('"'),
+            "password": str(self.config.hana_password).strip().strip('"'),
+        }
+
+        # Some hdbcli/runtime combinations reject sslValidateCertificate as an
+        # invalid connect flag. Try secure defaults first, then compatible fallback.
+        attempts = [
+            {**base_params, "encrypt": True, "sslValidateCertificate": False},
+            {**base_params, "encrypt": True},
+        ]
+
+        last_error: Optional[Exception] = None
+        for params in attempts:
+            try:
+                self._conn = dbapi.connect(**params)
+                break
+            except Exception as exc:
+                last_error = exc
+                self._conn = None
+
+        if not self._conn:
+            raise RuntimeError(
+                "Failed to connect to HANA with supported connection options"
+            ) from last_error
+
         cur = self._conn.cursor()
-        cur.execute(f'SET SCHEMA "{self.config.hana_schema}"')
+        schema = str(self.config.hana_schema).strip().strip('"')
+        cur.execute(f'SET SCHEMA "{schema}"')
         cur.close()
 
     def close(self) -> None:
