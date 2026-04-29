@@ -26,16 +26,23 @@ def create_parser():
     parser = argparse.ArgumentParser(prog="python main.py kb")
     subparsers = parser.add_subparsers(dest="command")
     
+    # Add URL command
     p = subparsers.add_parser("add-url", help="Add single URL (skips if exists)")
     p.add_argument("url", help="Microsoft Learn URL")
     p.add_argument("--category", help="Optional category")
     p.add_argument("--no-vectorize", action="store_true")
     
+    # Stats command
     subparsers.add_parser("stats", help="Show statistics")
     
+    # Search command
     p = subparsers.add_parser("search", help="Search documentation")
     p.add_argument("query", nargs="+")
     p.add_argument("--top-k", type=int, default=5)
+    
+    # ===== ADD THIS: Vectorize command =====
+    p = subparsers.add_parser("vectorize", help="Generate embeddings for pending chunks")
+    p.add_argument("--batch-size", type=int, default=20, help="Chunks per batch")
     
     return parser
 
@@ -58,5 +65,10 @@ def execute_command(args):
     elif args.command == "add-url":
         result = kb.add_url(args.url, args.category, args.no_vectorize)
         logger.info(f"\n{result['message']}")
+    
+    # ===== ADD THIS: Vectorize execution =====
+    elif args.command == "vectorize":
+        result = kb.vectorize(batch_size=args.batch_size)
+        logger.info(f"\n Vectorization complete: {result}")
     
     return 0
