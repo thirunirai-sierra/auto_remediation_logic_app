@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 from agent.observer.error_detector import (
@@ -15,10 +16,22 @@ from agent.observer.error_detector import (
 )
 from agent.rca_agent.llm_rca import generate_rca_with_llm
 from common.llm.llm_client import AICoreLLMClient
+from agent.knowledge.rag.enricher import enrich_with_rag_and_llm
 from agent.observer.models.rca_model import Action, JSONDict, RCAResult
 from agent.rca_agent.recommender import recommendation_for_root_cause, solution_for_root_cause
 
 logger = logging.getLogger(__name__)
+
+
+def _knowledge_path() -> str:
+    return str(Path(__file__).resolve().parents[1] / "knowledge" / "chunks.jsonl")
+
+
+def _needs_kb_refinement(rca: JSONDict) -> bool:
+    confidence = float(rca.get("confidence") or 0.0)
+    solution = str(rca.get("solution") or "").strip()
+    exact_issue = str(rca.get("exact_issue") or "").strip()
+    return confidence < 0.85 or len(solution) < 60 or len(exact_issue) < 40
 
 
 def get_failed_actions(actions: List[Action]) -> List[Action]:
@@ -96,8 +109,38 @@ def generate_rca(actions: List[Action], flow_context: Optional[JSONDict] = None)
         baseline_rca={},
     )
     if llm_result is not None:
+        out = llm_result.to_dict()
+        if _needs_kb_refinement(out):
+            enriched = enrich_with_rag_and_llm(
+                out,
+                flow_context,
+                knowledge_path=_knowledge_path(),
+                llm_client=llm_client,
+            )
+            if isinstance(enriched, dict) and enriched.get("solution"):
+                logger.info("RCA source: llm+knowledge")
+                return enriched
         logger.info("RCA source: llm")
-        return llm_result.to_dict()
+        return out
+    baseline = {
+        "error_location": extract_error_location(primary, extract_error_message(primary), flow_context)[0],
+        "action_type": extract_error_location(primary, extract_error_message(primary), flow_context)[1],
+        "error_code": extract_error_code(primary) or "unknown",
+        "root_cause": "unknown",
+        "exact_issue": extract_error_message(primary),
+        "recommendation": "",
+        "solution": "",
+        "confidence": 0.0,
+    }
+    enriched = enrich_with_rag_and_llm(
+        baseline,
+        flow_context,
+        knowledge_path=_knowledge_path(),
+        llm_client=llm_client,
+    )
+    if isinstance(enriched, dict) and enriched.get("solution"):
+        logger.info("RCA source: knowledge_enriched_fallback")
+        return enriched
     logger.error("RCA source: llm_failed")
     code = extract_error_code(primary) or "unknown"
     err = extract_error_message(primary)
@@ -157,8 +200,38 @@ def generate_rca_from_error(
         baseline_rca={},
     )
     if llm_result is not None:
+        out = llm_result.to_dict()
+        if _needs_kb_refinement(out):
+            enriched = enrich_with_rag_and_llm(
+                out,
+                flow_context,
+                knowledge_path=_knowledge_path(),
+                llm_client=llm_client,
+            )
+            if isinstance(enriched, dict) and enriched.get("solution"):
+                logger.info("RCA source: llm+knowledge")
+                return enriched
         logger.info("RCA source: llm")
-        return llm_result.to_dict()
+        return out
+    baseline = {
+        "error_location": error_location or "unknown",
+        "action_type": action_type or "system",
+        "error_code": error_code or "unknown",
+        "root_cause": "unknown",
+        "exact_issue": error_message or "",
+        "recommendation": "",
+        "solution": "",
+        "confidence": 0.0,
+    }
+    enriched = enrich_with_rag_and_llm(
+        baseline,
+        flow_context,
+        knowledge_path=_knowledge_path(),
+        llm_client=llm_client,
+    )
+    if isinstance(enriched, dict) and enriched.get("solution"):
+        logger.info("RCA source: knowledge_enriched_fallback")
+        return enriched
 
     logger.error("RCA source: llm_failed")
     failure_msg = "LLM request failed; no rule-based fallback is enabled."
