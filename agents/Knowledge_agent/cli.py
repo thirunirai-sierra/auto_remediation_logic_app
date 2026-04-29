@@ -41,11 +41,11 @@ def execute_command(args):
     
     if args.command == "stats":
         stats = kb.get_stats()
-        print(f"\n📊 Total: {stats['total']}, Vectorized: {stats['vectorized']}, Pending: {stats['pending']}")
+        print(f"\n Total: {stats['total']}, Vectorized: {stats['vectorized']}, Pending: {stats['pending']}")
     
     elif args.command == "search":
         query = " ".join(args.query)
-        print(f"\n🔍 Searching: '{query}'")
+        print(f"\n Searching: '{query}'")
         results = kb.search(query, top_k=args.top_k)
         for r in results:
             print(f"[{r['similarity']:.1f}%] {r['meta'].get('title', 'Unknown')[:60]}")

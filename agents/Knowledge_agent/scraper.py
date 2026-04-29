@@ -264,9 +264,9 @@ async def scrape_all_async(
                                 "product": "Azure Logic Apps",
                             },
                         })
-                    print(f"  ✔ {url.split('/')[-1][:50]}: {len(text_chunks)} chunks")
+                    print(f"   {url.split('/')[-1][:50]}: {len(text_chunks)} chunks")
                 else:
-                    print(f"  – {url.split('/')[-1][:50]}: No error content")
+                    print(f"   {url.split('/')[-1][:50]}: No error content")
             
             if batch_idx + batch_size < len(urls_to_scrape):
                 await asyncio.sleep(0.5)

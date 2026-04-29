@@ -39,7 +39,7 @@ class KnowledgeAgent:
         Returns:
             Dictionary with ingestion statistics.
         """
-        print("\n📥 Knowledge Agent: Ingesting documentation...")
+        print("\n Knowledge Agent: Ingesting documentation...")
         start_time = time.time()
         
         chunks = asyncio.run(get_knowledge_chunks_async(
@@ -74,7 +74,7 @@ class KnowledgeAgent:
         Returns:
             Dictionary with vectorization statistics.
         """
-        print("\n🧠 Knowledge Agent: Generating embeddings...")
+        print("\n Knowledge Agent: Generating embeddings...")
         start_time = time.time()
         
         with HanaClient() as db:
@@ -100,10 +100,10 @@ class KnowledgeAgent:
                     vectors = self.embedder.embed_batch(texts)
                     db.update_embeddings(list(zip(chunk_ids, vectors)))
                     vectorized += len(rows)
-                    print(f"  ✓ Vectorized {vectorized}/{stats['pending']}")
+                    print(f"   Vectorized {vectorized}/{stats['pending']}")
                 except Exception as e:
                     failed += len(rows)
-                    print(f"  ✗ Failed batch: {e}")
+                    print(f"   Failed batch: {e}")
             
             elapsed = time.time() - start_time
             print(f"  Completed: {vectorized} vectorized, {failed} failed in {elapsed:.1f}s")
@@ -144,13 +144,13 @@ class KnowledgeAgent:
         Returns:
             Dictionary with status and message
         """
-        print(f"\n🌐 Processing URL: {url}")
+        print(f"\n Processing URL: {url}")
         
         # Check if URL already exists
         with HanaClient() as db:
             existing_urls = db.get_existing_urls()
             if url in existing_urls:
-                return {"success": True, "message": f"⏭️ URL already exists. Skipped."}
+                return {"success": True, "message": f" URL already exists. Skipped."}
         
         # Scrape the URL
         async def scrape():
@@ -163,15 +163,15 @@ class KnowledgeAgent:
         result = asyncio.run(scrape())
         
         if not result:
-            return {"success": False, "message": "❌ Failed to scrape URL or no error content found"}
+            return {"success": False, "message": " Failed to scrape URL or no error content found"}
         
         # Chunk the content
         chunks = chunk_text(result["text"])
         
         if not chunks:
-            return {"success": False, "message": "❌ No meaningful chunks extracted"}
+            return {"success": False, "message": " No meaningful chunks extracted"}
         
-        print(f"   📄 Created {len(chunks)} chunks")
+        print(f"    Created {len(chunks)} chunks")
         
         # Prepare chunks for insertion
         chunk_entries = []
@@ -192,20 +192,20 @@ class KnowledgeAgent:
             # Double-check again
             existing_urls = db.get_existing_urls()
             if url in existing_urls:
-                return {"success": True, "message": f"⏭️ URL was added by another process. Skipped."}
+                return {"success": True, "message": f" URL was added by another process. Skipped."}
             
             inserted = db.insert_chunks(chunk_entries)
-            print(f"   💾 Inserted {inserted} chunks into HANA")
+            print(f" Inserted {inserted} chunks into HANA")
             
             # Vectorize if requested
             if not skip_vectorize and inserted > 0:
-                print(f"   🧠 Generating embeddings...")
+                print(f"  Generating embeddings...")
                 unvectorized = db.get_unvectorized_chunks(limit=inserted)
                 if unvectorized:
                     chunk_ids = [row[0] for row in unvectorized]
                     texts = [row[1] for row in unvectorized]
                     vectors = self.embedder.embed_batch(texts)
                     db.update_embeddings(list(zip(chunk_ids, vectors)))
-                    print(f"   ✅ Vectorized {len(vectors)} chunks")
+                    print(f" Vectorized {len(vectors)} chunks")
         
-        return {"success": True, "message": f"✅ Added {url} with {len(chunks)} chunks"}
+        return {"success": True, "message": f" Added {url} with {len(chunks)} chunks"}
