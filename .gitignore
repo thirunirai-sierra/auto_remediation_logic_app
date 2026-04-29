@@ -1,6 +1,7 @@
 .env
+.env.*
 
-# Python cache artifacts
+# Python cache and bytecode
 __pycache__/
 *.py[cod]
 *$py.class
@@ -16,8 +17,14 @@ env/
 .ruff_cache/
 .coverage
 coverage/
+htmlcov/
 dist/
 build/
+*.egg-info/
+
+# Logs and runtime artifacts
+*.log
+workflow_backup_*.json
 
 # OS/editor artifacts
 .DS_Store
@@ -25,6 +32,11 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Runtime/output artifacts
-*.log
-workflow_backup_*.json
+# Temporary folders
+tmp/
+output/
+
+# Keep required tracked files explicit
+!requirements.txt
+!requirement1.txt
+!agent/knowledge/*.jsonl

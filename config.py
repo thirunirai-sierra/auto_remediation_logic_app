@@ -42,8 +42,9 @@ class Settings:
     azure_openai_api_key: Optional[str]
     azure_openai_deployment: str
     azure_openai_api_version: str
-    
-    # Remediation
+    azure_api_runs_version: str
+    azure_api_workflow_version: str
+    azure_api_trigger_run_version: str
     max_remediation_attempts: int
     rag_enabled: bool
     rag_top_k: int
@@ -109,8 +110,9 @@ def get_settings() -> Settings:
         azure_openai_api_version=os.getenv(
             "AZURE_OPENAI_API_VERSION", "2024-02-15-preview"
         ),
-        
-        # Remediation
+        azure_api_runs_version=os.getenv("AZURE_API_RUNS_VERSION", "2019-05-01"),
+        azure_api_workflow_version=os.getenv("AZURE_API_WORKFLOW_VERSION", "2019-05-01"),
+        azure_api_trigger_run_version=os.getenv("AZURE_API_TRIGGER_RUN_VERSION", "2016-06-01"),
         max_remediation_attempts=max(1, int(os.getenv("MAX_REMEDIATION_ATTEMPTS", "2"))),
         rag_enabled=_env_bool("RAG_ERROR_ANALYSIS", False),
         rag_top_k=max(1, int(os.getenv("RAG_TOP_K", "5"))),

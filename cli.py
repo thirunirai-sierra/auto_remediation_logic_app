@@ -18,7 +18,7 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("msal").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
 
-from agent import run_remediation
+from workflow_agent import run_remediation
 from config import get_settings
 from multi_flow_runner import (
     collect_failed_run_errors,
@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         "-b",
         "--backup-dir",
         default=None,
-        help="Directory for workflow JSON backups (default: cwd)",
+        help="If set, directory for workflow JSON backups before each attempt (omit to skip)",
     )
     p.add_argument(
         "--log-level",
