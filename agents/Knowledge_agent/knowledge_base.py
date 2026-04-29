@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+import logging
 import httpx
 from typing import List, Dict, Optional, Any
 
@@ -13,6 +14,9 @@ from agents.Knowledge_agent.scraper import (
     extract_category
 )
 from agents.Knowledge_agent.embedder import Embedder
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 class KnowledgeAgent:
     """
@@ -39,7 +43,7 @@ class KnowledgeAgent:
         Returns:
             Dictionary with ingestion statistics.
         """
-        print("\n Knowledge Agent: Ingesting documentation...")
+        logger.info("\n Knowledge Agent: Ingesting documentation...")
         start_time = time.time()
         
         chunks = asyncio.run(get_knowledge_chunks_async(
@@ -48,19 +52,19 @@ class KnowledgeAgent:
             timeout_per_url=45
         ))
         
-        print(f"  Collected {len(chunks)} chunks from Microsoft Learn")
+        logger.info(f"  Collected {len(chunks)} chunks from Microsoft Learn")
         
         if not chunks:
-            print("  No chunks collected")
+            logger.info("  No chunks collected")
             return {"total": 0, "vectorized": 0, "pending": 0}
         
         with HanaClient() as db:
             db.create_table(drop_first=clear)
             inserted = db.insert_chunks(chunks)
-            print(f"  Stored {inserted} chunks in HANA")
+            logger.info(f"  Stored {inserted} chunks in HANA")
             
             elapsed = time.time() - start_time
-            print(f"  Ingestion completed in {elapsed:.1f}s")
+            logger.info(f"  Ingestion completed in {elapsed:.1f}s")
             
             return db.get_stats()
     
@@ -74,15 +78,15 @@ class KnowledgeAgent:
         Returns:
             Dictionary with vectorization statistics.
         """
-        print("\n Knowledge Agent: Generating embeddings...")
+        logger.info("\n Knowledge Agent: Generating embeddings...")
         start_time = time.time()
         
         with HanaClient() as db:
             stats = db.get_stats()
-            print(f"  Total: {stats['total']} | Pending: {stats['pending']}")
+            logger.info(f"  Total: {stats['total']} | Pending: {stats['pending']}")
             
             if stats['pending'] == 0:
-                print("  All chunks already vectorized")
+                logger.info("  All chunks already vectorized")
                 return stats
             
             vectorized = 0
@@ -100,13 +104,13 @@ class KnowledgeAgent:
                     vectors = self.embedder.embed_batch(texts)
                     db.update_embeddings(list(zip(chunk_ids, vectors)))
                     vectorized += len(rows)
-                    print(f"   Vectorized {vectorized}/{stats['pending']}")
+                    logger.info(f"   Vectorized {vectorized}/{stats['pending']}")
                 except Exception as e:
                     failed += len(rows)
-                    print(f"   Failed batch: {e}")
+                    logger.info(f"   Failed batch: {e}")
             
             elapsed = time.time() - start_time
-            print(f"  Completed: {vectorized} vectorized, {failed} failed in {elapsed:.1f}s")
+            logger.info(f"  Completed: {vectorized} vectorized, {failed} failed in {elapsed:.1f}s")
             
             return {"vectorized": vectorized, "failed": failed}
     
@@ -144,7 +148,7 @@ class KnowledgeAgent:
         Returns:
             Dictionary with status and message
         """
-        print(f"\n Processing URL: {url}")
+        logger.info(f"\n Processing URL: {url}")
         
         # Check if URL already exists
         with HanaClient() as db:
@@ -171,7 +175,7 @@ class KnowledgeAgent:
         if not chunks:
             return {"success": False, "message": " No meaningful chunks extracted"}
         
-        print(f"    Created {len(chunks)} chunks")
+        logger.info(f"    Created {len(chunks)} chunks")
         
         # Prepare chunks for insertion
         chunk_entries = []
@@ -195,17 +199,17 @@ class KnowledgeAgent:
                 return {"success": True, "message": f" URL was added by another process. Skipped."}
             
             inserted = db.insert_chunks(chunk_entries)
-            print(f" Inserted {inserted} chunks into HANA")
+            logger.info(f" Inserted {inserted} chunks into HANA")
             
             # Vectorize if requested
             if not skip_vectorize and inserted > 0:
-                print(f"  Generating embeddings...")
+                logger.info(f"  Generating embeddings...")
                 unvectorized = db.get_unvectorized_chunks(limit=inserted)
                 if unvectorized:
                     chunk_ids = [row[0] for row in unvectorized]
                     texts = [row[1] for row in unvectorized]
                     vectors = self.embedder.embed_batch(texts)
                     db.update_embeddings(list(zip(chunk_ids, vectors)))
-                    print(f" Vectorized {len(vectors)} chunks")
+                    logger.info(f" Vectorized {len(vectors)} chunks")
         
         return {"success": True, "message": f" Added {url} with {len(chunks)} chunks"}

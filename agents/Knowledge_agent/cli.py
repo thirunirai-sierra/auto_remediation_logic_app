@@ -1,7 +1,12 @@
 """Knowledge Agent CLI."""
 
 import argparse
+import logging
 from agents.Knowledge_agent.knowledge_base import KnowledgeAgent
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def main(args_list):
@@ -41,17 +46,17 @@ def execute_command(args):
     
     if args.command == "stats":
         stats = kb.get_stats()
-        print(f"\n Total: {stats['total']}, Vectorized: {stats['vectorized']}, Pending: {stats['pending']}")
+        logger.info(f"\n Total: {stats['total']}, Vectorized: {stats['vectorized']}, Pending: {stats['pending']}")
     
     elif args.command == "search":
         query = " ".join(args.query)
-        print(f"\n Searching: '{query}'")
+        logger.info(f"\n Searching: '{query}'")
         results = kb.search(query, top_k=args.top_k)
         for r in results:
-            print(f"[{r['similarity']:.1f}%] {r['meta'].get('title', 'Unknown')[:60]}")
+            logger.info(f"[{r['similarity']:.1f}%] {r['meta'].get('title', 'Unknown')[:60]}")
     
     elif args.command == "add-url":
         result = kb.add_url(args.url, args.category, args.no_vectorize)
-        print(f"\n{result['message']}")
+        logger.info(f"\n{result['message']}")
     
     return 0

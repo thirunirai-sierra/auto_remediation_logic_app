@@ -238,7 +238,7 @@ async def scrape_all_async(
             if not any(slow in url for slow in SLOW_URLS)
         ]
     
-    print(f"\n  Scraping {len(urls_to_scrape)} URLs with batch size {batch_size}")
+    logger.info(f"\n  Scraping {len(urls_to_scrape)} URLs with batch size {batch_size}")
     
     async with httpx.AsyncClient(
         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
@@ -264,9 +264,9 @@ async def scrape_all_async(
                                 "product": "Azure Logic Apps",
                             },
                         })
-                    print(f"   {url.split('/')[-1][:50]}: {len(text_chunks)} chunks")
+                    logger.info(f"   {url.split('/')[-1][:50]}: {len(text_chunks)} chunks")
                 else:
-                    print(f"   {url.split('/')[-1][:50]}: No error content")
+                    logger.info(f"   {url.split('/')[-1][:50]}: No error content")
             
             if batch_idx + batch_size < len(urls_to_scrape):
                 await asyncio.sleep(0.5)

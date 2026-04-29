@@ -19,26 +19,26 @@ kb = KnowledgeAgent()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
-    print("\n" + "=" * 60)
-    print("🚀 HANA Knowledge Base API Server")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info(" HANA Knowledge Base API Server")
+    logger.info("=" * 60)
    
     try:
         stats = kb.get_stats()
-        print(f"✅ Connected to HANA")
-        print(f"   Total chunks: {stats['total']}")
-        print(f"   Vectorized: {stats['vectorized']}")
-        print(f"   Pending: {stats['pending']}")
+        logger.info(" Connected to HANA")
+        logger.info(f"   Total chunks: {stats['total']}")
+        logger.info(f"   Vectorized: {stats['vectorized']}")
+        logger.info(f"   Pending: {stats['pending']}")
     except Exception as e:
-        print(f"⚠️ HANA connection issue: {e}")
+        logger.error(f" HANA connection issue: {e}")
    
-    print("\n📍 Swagger UI: http://127.0.0.1:8000/docs")
-    print("📍 Health Check: http://127.0.0.1:8000/health")
-    print("\n" + "=" * 60 + "\n")
+    logger.info(" Swagger UI: http://127.0.0.1:8000/docs")
+    logger.info(" Health Check: http://127.0.0.1:8000/health")
+    logger.info("=" * 60)
    
     yield
    
-    print("\n👋 Server shutting down...\n")
+    logger.info(" Server shutting down...")
 
 
 app = FastAPI(
@@ -83,6 +83,7 @@ async def health_check():
             "vectorized": stats["vectorized"]
         }
     except Exception as e:
+        logger.error(f"Health check failed: {e}")
         return {
             "status": "unhealthy",
             "error": str(e)
@@ -101,6 +102,7 @@ async def get_stats():
             "status": "ready" if stats["vectorized"] > 0 else "needs_vectorization"
         }
     except Exception as e:
+        logger.error(f"Failed to get stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -113,6 +115,8 @@ async def search_documents(
     try:
         # Use the global kb instance
         results = kb.search(q, top_k)
+        
+        logger.info(f"Search completed - Query: '{q}', Results: {len(results)}")
        
         return {
             "query": q,
@@ -141,4 +145,3 @@ if __name__ == "__main__":
         port=8000,
         reload=False
     )
- 
