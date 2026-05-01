@@ -1,0 +1,274 @@
+{
+  "timestamp": "2026-05-01T03:28:34.317950+00:00",
+  "workflow_name": "test_workflow",
+  "run_id": "08584240563430760319914118786CU12",
+  "workflow": {
+    "properties": {
+      "provisioningState": "Succeeded",
+      "createdTime": "2026-04-30T10:16:56.6359917Z",
+      "changedTime": "2026-05-01T03:28:15.942884Z",
+      "state": "Enabled",
+      "version": "08584240007895362996",
+      "accessEndpoint": "https://prod-11.southindia.logic.azure.com:443/workflows/9d9086b0e3f54e4a8736f1b807cc3e96",
+      "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "contentVersion": "1.0.0.0",
+        "triggers": {
+          "manual": {
+            "type": "Request",
+            "kind": "Http",
+            "inputs": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userId": {
+                    "type": "string"
+                  },
+                  "firstName": {
+                    "type": "string"
+                  },
+                  "lastName": {
+                    "type": "string"
+                  },
+                  "department": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "actions": {
+          "Check_User_Exists": {
+            "runAfter": {},
+            "type": "Http",
+            "inputs": {
+              "method": "GET",
+              "uri": "https://httpbin.org/status/200",
+              "retryPolicy": {
+                "type": "fixed",
+                "count": 3,
+                "interval": "PT30S"
+              },
+              "timeout": "PT120S"
+            }
+          },
+          "Parse_User_Response": {
+            "runAfter": {
+              "Check_User_Exists": [
+                "Succeeded"
+              ]
+            },
+            "type": "ParseJson",
+            "inputs": {
+              "content": "@body('Check_User_Exists')",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "firstName": {
+                    "type": "string"
+                  },
+                  "lastName": {
+                    "type": "string"
+                  },
+                  "department": {
+                    "type": "string"
+                  },
+                  "createdAt": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "Validate_User_Data": {
+            "actions": {
+              "Update_User_Record": {
+                "runAfter": {},
+                "type": "Http",
+                "inputs": {
+                  "method": "PATCH",
+                  "uri": "https://api.database.com/users/@{triggerBody()['userId']}",
+                  "headers": {
+                    "Content-Type": "application/json"
+                  },
+                  "body": {
+                    "firstName": "@triggerBody()['firstName']",
+                    "lastName": "@triggerBody()['lastName']",
+                    "department": "@triggerBody()['department']",
+                    "updatedAt": "@utcNow()"
+                  }
+                }
+              },
+              "Log_Update_Success": {
+                "runAfter": {
+                  "Update_User_Record": [
+                    "Succeeded"
+                  ]
+                },
+                "type": "Http",
+                "inputs": {
+                  "method": "POST",
+                  "uri": "https://api.logging.com/logs",
+                  "body": {
+                    "action": "user_updated",
+                    "userId": "@triggerBody()['userId']",
+                    "timestamp": "@utcNow()"
+                  }
+                }
+              }
+            },
+            "runAfter": {
+              "Parse_User_Response": [
+                "Succeeded"
+              ]
+            },
+            "else": {
+              "actions": {
+                "Return_Validation_Error": {
+                  "runAfter": {},
+                  "type": "Compose",
+                  "inputs": "Invalid user data: firstName and department cannot be empty"
+                }
+              }
+            },
+            "expression": {
+              "and": [
+                {
+                  "not": {
+                    "equals": [
+                      "@body('Parse_User_Response')['firstName']",
+                      ""
+                    ]
+                  }
+                },
+                {
+                  "not": {
+                    "equals": [
+                      "@body('Parse_User_Response')['department']",
+                      ""
+                    ]
+                  }
+                }
+              ]
+            },
+            "type": "If"
+          },
+          "Return_Final_Response": {
+            "runAfter": {
+              "Validate_User_Data": [
+                "Succeeded"
+              ]
+            },
+            "type": "Response",
+            "kind": "Http",
+            "inputs": {
+              "statusCode": 200,
+              "body": {
+                "message": "User record processed",
+                "userId": "@triggerBody()['userId']",
+                "updatedAt": "@utcNow()"
+              }
+            }
+          }
+        },
+        "outputs": {}
+      },
+      "parameters": {},
+      "endpointsConfiguration": {
+        "workflow": {
+          "outgoingIpAddresses": [
+            {
+              "address": "104.211.210.192"
+            },
+            {
+              "address": "104.211.218.202"
+            },
+            {
+              "address": "52.172.101.114"
+            },
+            {
+              "address": "52.172.101.181"
+            },
+            {
+              "address": "52.140.5.116"
+            },
+            {
+              "address": "52.172.98.23"
+            },
+            {
+              "address": "52.140.2.252"
+            },
+            {
+              "address": "52.140.0.225"
+            },
+            {
+              "address": "52.140.7.114"
+            },
+            {
+              "address": "52.172.101.204"
+            }
+          ],
+          "accessEndpointIpAddresses": [
+            {
+              "address": "52.140.4.233"
+            },
+            {
+              "address": "52.172.100.99"
+            },
+            {
+              "address": "52.140.5.154"
+            },
+            {
+              "address": "52.140.1.153"
+            },
+            {
+              "address": "52.172.96.103"
+            },
+            {
+              "address": "52.140.2.150"
+            },
+            {
+              "address": "52.172.103.116"
+            },
+            {
+              "address": "52.172.99.31"
+            }
+          ]
+        },
+        "connector": {
+          "outgoingIpAddresses": [
+            {
+              "address": "13.71.127.26"
+            },
+            {
+              "address": "13.71.125.22"
+            },
+            {
+              "address": "20.192.184.32/27"
+            },
+            {
+              "address": "40.78.194.240/28"
+            },
+            {
+              "address": "20.192.152.64/27"
+            },
+            {
+              "address": "20.192.152.96/28"
+            },
+            {
+              "address": "52.172.80.0/26"
+            }
+          ]
+        }
+      }
+    },
+    "id": "/subscriptions/c474dc7c-4f50-490b-a886-847fad508a71/resourceGroups/logicapp-rg/providers/Microsoft.Logic/workflows/test_workflow",
+    "name": "test_workflow",
+    "type": "Microsoft.Logic/workflows",
+    "location": "southindia"
+  }
+}

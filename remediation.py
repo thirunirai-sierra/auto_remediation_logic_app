@@ -7,7 +7,10 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from config import Settings
-
+import logging
+# Set logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 def _fix_compose_add_string_expression(
     node: Dict[str, Any], analysis: Optional[Dict[str, Any]]
@@ -168,3 +171,55 @@ def strip_read_only_for_put(workflow_get_response: Dict[str, Any]) -> Dict[str, 
         ):
             props.pop(ro, None)
     return body
+def fix_condition_contains_null(
+    node: Dict[str, Any], analysis: Optional[Dict[str, Any]]
+) -> bool:
+    """
+    Fix Condition action where contains() receives null value.
+    Wraps the first argument with coalesce() to provide a default.
+    """
+    if not isinstance(node, dict):
+        return False
+    
+    # Get the condition expression
+    expression = node.get("expression")
+    if not isinstance(expression, str):
+        return False
+    
+    # Check if this is a contains() null error
+    error_msg = str((analysis or {}).get("exact_error_message") or "")
+    if "contains" not in error_msg.lower() or "null" not in error_msg.lower():
+        return False
+    
+    import re
+    
+    # Pattern to find contains(..., ...) and wrap first argument
+    pattern = r"contains\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)"
+    
+    def wrap_first_arg(match):
+        first_arg = match.group(1).strip()
+        second_arg = match.group(2).strip()
+        
+        # Detect type from context
+        if '"' in second_arg:
+            # String value - wrap with empty string default
+            wrapped_first = f"coalesce({first_arg}, '')"
+        elif "createArray" in first_arg or "items" in first_arg or "value" in first_arg:
+            # Array - wrap with empty array
+            wrapped_first = f"coalesce({first_arg}, createArray())"
+        else:
+            # Default to string
+            wrapped_first = f"coalesce({first_arg}, '')"
+        
+        return f"contains({wrapped_first}, {second_arg})"
+    
+    new_expression = re.sub(pattern, wrap_first_arg, expression)
+    
+    if new_expression != expression:
+        node["expression"] = new_expression
+        logger.info(f"[FIX] Condition expression fixed!")
+        logger.info(f"  Old: {expression[:100]}...")
+        logger.info(f"  New: {new_expression[:100]}...")
+        return True
+    
+    return False

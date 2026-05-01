@@ -1,7 +1,6 @@
 """
-CLI entry: single failed run OR multi-workflow scan via Log Analytics.
-
-Now supports environment variables for multi-flow configuration.
+CLI entry: single failed run, multi-workflow scan, or continuous monitoring.
+Uses new LLM-based Orchestrator (Observer → RCA → Fixer).
 """
 
 from __future__ import annotations
@@ -9,218 +8,318 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import signal
 import sys
 import time
+from datetime import datetime
+from typing import Any, Dict, Optional
 
-# Suppress verbose logging from Azure SDK and other libraries
 logging.getLogger("azure").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("msal").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
 
-from workflow_agent import run_remediation
-from config import get_settings
-from multi_flow_runner import (
-    collect_failed_run_errors,
-    process_failed_runs,
-)
+from config import get_settings, Settings
+from multi_flow_runner import collect_failed_run_errors, process_failed_runs
+from remediation_tracker import get_tracker
+
+# Load LLM-based Orchestrator (primary)
+ORCHESTRATOR_AVAILABLE = False
+try:
+    from Orchestrator_agent import run_remediation as orchestrator_remediation
+    ORCHESTRATOR_AVAILABLE = True
+    print("✓ LLM-based Orchestrator loaded")
+except ImportError:
+    try:
+        from agent.orchestrator.Orchestrator_agent import run_remediation as orchestrator_remediation
+        ORCHESTRATOR_AVAILABLE = True
+        print("✓ Orchestrator loaded")
+    except ImportError as e:
+        print(f"⚠️ Orchestrator not available: {e}")
+
+# Fallback to legacy if needed
+try:
+    from workflow_agent import run_remediation as legacy_remediation
+except ImportError:
+    legacy_remediation = None
+
+
+class ContinuousMonitor:
+    def __init__(
+        self,
+        settings: Settings,
+        subscription_id: str,
+        resource_group: str,
+        workspace_id: str,
+        poll_interval_seconds: int = 60,
+        lookback_hours: int = 24,
+        use_orchestrator: bool = True,
+        backup_dir: Optional[str] = None,
+        max_concurrency: int = 4,
+    ):
+        self.settings = settings
+        self.subscription_id = subscription_id
+        self.resource_group = resource_group
+        self.workspace_id = workspace_id
+        self.poll_interval = poll_interval_seconds
+        self.lookback_hours = lookback_hours
+        self.use_orchestrator = use_orchestrator and ORCHESTRATOR_AVAILABLE
+        self.backup_dir = backup_dir
+        self.max_concurrency = max_concurrency
+        self._running = False
+        self.tracker = get_tracker()
+    
+    def start(self) -> None:
+        self._running = True
+        print("\n" + "=" * 70)
+        print("🔍 Starting Continuous Monitor (LLM-based)")
+        print(f"   Poll interval: {self.poll_interval}s")
+        print(f"   Lookback hours: {self.lookback_hours}")
+        print(f"   Using LLM Orchestrator: {'✅ YES' if self.use_orchestrator else '❌ NO'}")
+        print("=" * 70)
+        print("Press Ctrl+C to stop\n")
+        
+        def signal_handler(signum, frame):
+            print("\n⚠️ Stopping monitor...")
+            self._running = False
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        try:
+            while self._running:
+                try:
+                    self._poll_and_remediate()
+                except Exception as e:
+                    print(f"❌ Polling error: {e}")
+                
+                if self._running:
+                    for i in range(self.poll_interval):
+                        if not self._running:
+                            break
+                        time.sleep(1)
+        finally:
+            print("\n🛑 Monitor stopped")
+    
+    def _poll_and_remediate(self) -> None:
+        print(f"\n📊 Polling at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("-" * 50)
+        
+        try:
+            failed_runs = collect_failed_run_errors(
+                workspace_id=self.workspace_id,
+                hours=self.lookback_hours,
+                top_n=50,
+                settings=self.settings,
+            )
+        except Exception as e:
+            print(f"❌ Failed to query Log Analytics: {e}")
+            return
+        
+        results = failed_runs.get("results", [])
+        if not results:
+            print("✓ No failed runs found")
+            return
+        
+        print(f"📋 Found {len(results)} failed runs")
+        
+        remediated_count = 0
+        skipped_count = 0
+        failed_count = 0
+        
+        for run in results:
+            wf_name = run.get("resource_workflowName_s") or run.get("workflow_name")
+            run_id = run.get("resource_runId_s") or run.get("run_id")
+            
+            if not wf_name or not run_id:
+                continue
+            
+            if self.tracker.is_run_already_remediated(run_id):
+                skipped_count += 1
+                print(f"⏭️ Skipping {wf_name}/{run_id}: already fixed")
+                continue
+            
+            print(f"🔧 Remediating {wf_name}/{run_id} with LLM...")
+            result = self._remediate_run(wf_name, run_id)
+            
+            if result and result.get("status") in ("remediated", "success"):
+                remediated_count += 1
+                error_type = result.get("root_cause", "unknown")
+                self.tracker.mark_run_remediated(run_id, wf_name, error_type)
+                print(f"✅ SUCCESS: {wf_name}/{run_id}")
+                print(f"   Root cause: {result.get('root_cause')}")
+                print(f"   Fix: {result.get('fix_strategy', {}).get('strategy_description', 'N/A')[:80]}")
+            else:
+                failed_count += 1
+                error = result.get("error", "Unknown") if result else "Unknown"
+                print(f"❌ FAILED: {wf_name}/{run_id} - {error[:100]}")
+            
+            time.sleep(2)
+        
+        print(f"\n📊 Poll complete: remediated={remediated_count}, skipped={skipped_count}, failed={failed_count}")
+        stats = self.tracker.get_stats()
+        print(f"📈 Total fixes: {stats['total_remediated_runs']}")
+    
+    def _remediate_run(self, workflow_name: str, run_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            if self.use_orchestrator:
+                return orchestrator_remediation(
+                    workflow_name=workflow_name,
+                    run_id=run_id,
+                    subscription_id=self.subscription_id,
+                    resource_group=self.resource_group,
+                    settings=self.settings,
+                    backup_dir=self.backup_dir,
+                )
+            elif legacy_remediation:
+                result = legacy_remediation(
+                    subscription_id=self.subscription_id,
+                    resource_group=self.resource_group,
+                    workflow_name=workflow_name,
+                    run_id=run_id,
+                    settings=self.settings,
+                    backup_dir=self.backup_dir,
+                )
+                return {"status": result.get("status")} if result else None
+            else:
+                return {"status": "error", "error": "No remediation engine available"}
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            return {"status": "error", "error": str(e)}
+
+
+def show_tracker_stats():
+    tracker = get_tracker()
+    stats = tracker.get_stats()
+    print("\n" + "=" * 50)
+    print("📊 REMEDIATION TRACKER STATISTICS")
+    print("=" * 50)
+    print(f"Total remediated runs:     {stats['total_remediated_runs']}")
+    print(f"Tracked workflows:         {stats['tracked_workflows']}")
+    print(f"Total fixes applied:       {stats['total_fixes_applied']}")
+    print("=" * 50)
+
+
+def reset_tracker():
+    confirm = input("⚠️ Reset all tracking data? (y/N): ")
+    if confirm.lower() == 'y':
+        import os
+        if os.path.exists("remediation_state.json"):
+            os.remove("remediation_state.json")
+        print("✅ Tracker reset!")
+    else:
+        print("❌ Cancelled")
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(
-        description="Detect, analyze, and remediate Azure Logic Apps runs (single or multi-workflow)."
-    )
-    p.add_argument("-s", "--subscription-id", required=False, help="Azure subscription ID (or AZURE_SUBSCRIPTION_ID env)")
-    p.add_argument("-g", "--resource-group", required=False, help="Resource group name (or AZURE_RESOURCE_GROUP env)")
-    p.add_argument(
-        "-w",
-        "--workflow",
-        default=None,
-        help="Logic App (workflow) name (required for single run mode)",
-    )
-    p.add_argument(
-        "-r",
-        "--run-id",
-        default=None,
-        help="Failed run id (required for single run mode)",
-    )
-    p.add_argument(
-        "-t",
-        "--trigger",
-        default=None,
-        help="Trigger name for POST .../triggers/{name}/run (optional)",
-    )
-    p.add_argument(
-        "-b",
-        "--backup-dir",
-        default=None,
-        help="If set, directory for workflow JSON backups before each attempt (omit to skip)",
-    )
-    p.add_argument(
-        "--log-level",
-        default="WARNING",  # Changed from INFO to WARNING
-        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
-        help="Log level (default: WARNING)",
-    )
-    p.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Show detailed logs (overrides --log-level)",
-    )
-
-    mf = p.add_argument_group("Multi-workflow (Azure Log Analytics)")
-    mf.add_argument(
-        "--all-flows",
-        action="store_true",
-        help="Query AzureDiagnostics for failed runs (or MULTI_FLOW_ENABLED env)",
-    )
-    mf.add_argument(
-        "--workspace-id",
-        default=None,
-        help="Log Analytics workspace GUID (or LOG_ANALYTICS_WORKSPACE_ID env)",
-    )
-    mf.add_argument(
-        "--hours",
-        type=int,
-        default=None,
-        help="Lookback hours for failed runs query (or LOOKBACK_HOURS env)",
-    )
-    mf.add_argument(
-        "--top-n",
-        type=int,
-        default=None,
-        help="Max rows from Log Analytics (or TOP_N_RUNS env)",
-    )
-    mf.add_argument(
-        "--max-concurrency",
-        type=int,
-        default=None,
-        help="Parallel remediation workers (or MAX_CONCURRENCY env)",
-    )
-    mf.add_argument(
-        "--schedule-minutes",
-        type=int,
-        default=None,
-        help="If >0, repeat scan every N minutes (or SCHEDULE_MINUTES env)",
-    )
-    mf.add_argument(
-        "--log-only",
-        action="store_true",
-        help="Only read and display failed runs (or LOG_ONLY env)",
-    )
-    mf.add_argument(
-        "--quiet",
-        action="store_true",
-        help="Suppress all output except final JSON",
-    )
-
+    p = argparse.ArgumentParser(description="Logic Apps Auto-Remediation (LLM-based)")
+    
+    p.add_argument("-s", "--subscription-id", required=False)
+    p.add_argument("-g", "--resource-group", required=False)
+    p.add_argument("-w", "--workflow", default=None)
+    p.add_argument("-r", "--run-id", default=None)
+    p.add_argument("-b", "--backup-dir", default="./backups")
+    p.add_argument("--verbose", action="store_true")
+    p.add_argument("--quiet", action="store_true")
+    p.add_argument("--stats", action="store_true")
+    p.add_argument("--reset-tracker", action="store_true")
+    
+    mf = p.add_argument_group("Multi-workflow")
+    mf.add_argument("--all-flows", action="store_true")
+    mf.add_argument("--monitor", action="store_true")
+    mf.add_argument("--workspace-id", default=None)
+    mf.add_argument("--hours", type=int, default=24)
+    mf.add_argument("--poll-interval", type=int, default=60)
+    
     args = p.parse_args(argv)
     
-    # Configure logging
+    if args.stats:
+        show_tracker_stats()
+        return 0
+    
+    if args.reset_tracker:
+        reset_tracker()
+        return 0
+    
     if args.quiet:
-        # Suppress ALL logs
-        logging.basicConfig(level=logging.ERROR, format="%(message)s")
-        logging.getLogger().setLevel(logging.ERROR)
+        logging.basicConfig(level=logging.ERROR)
     elif args.verbose:
-        logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+        logging.basicConfig(level=logging.DEBUG)
     else:
-        # Default: WARNING level (only show warnings and errors)
-        logging.basicConfig(
-            level=getattr(logging, args.log_level),
-            format="%(message)s"  # Simpler format for warnings/errors
-        )
+        logging.basicConfig(level=logging.INFO)
     
-    # Load settings from env
     settings = get_settings()
-    
-    # Determine if multi-flow is enabled (CLI flag OR env var)
-    multi_flow_enabled = args.all_flows or settings.multi_flow_enabled
-    
-    # Resolve parameters with priority: CLI args > env vars
     subscription_id = args.subscription_id or settings.subscription_id
     resource_group = args.resource_group or settings.resource_group
     workspace_id = args.workspace_id or settings.log_analytics_workspace_id
-    hours = args.hours if args.hours is not None else settings.lookback_hours
-    top_n = args.top_n if args.top_n is not None else settings.top_n_runs
-    max_concurrency = args.max_concurrency if args.max_concurrency is not None else settings.max_concurrency
-    schedule_minutes = args.schedule_minutes if args.schedule_minutes is not None else settings.schedule_minutes
-    log_only = args.log_only or settings.log_only
     
-    # Single run mode (not multi-flow)
-    if not multi_flow_enabled:
-        if not args.workflow or not args.run_id:
-            p.error("--workflow and --run-id are required for single run mode (or use --all-flows/MULTI_FLOW_ENABLED)")
+    # Monitor mode
+    if args.monitor:
+        if not workspace_id:
+            print("❌ Error: --workspace-id required")
+            return 1
         
-        # For single run, we still need subscription and resource group
-        if not subscription_id or not resource_group:
-            p.error("subscription-id and resource-group required: use -s/-g flags or set AZURE_SUBSCRIPTION_ID/AZURE_RESOURCE_GROUP env vars")
-        
-        result = run_remediation(
-            subscription_id=subscription_id,
-            resource_group=resource_group,
-            workflow_name=args.workflow,
-            run_id=args.run_id,
+        monitor = ContinuousMonitor(
             settings=settings,
-            backup_dir=args.backup_dir,
-            trigger_name=args.trigger,
-        )
-        # Only print the final result
-        print(json.dumps(result, indent=2))
-        ok = result.get("status") in ("remediated", "no_error", "needs_manual_review")
-        return 0 if ok else 1
-    
-    # Multi-flow mode
-    # Validate required parameters
-    missing = []
-    if not subscription_id:
-        missing.append("subscription-id (AZURE_SUBSCRIPTION_ID)")
-    if not resource_group:
-        missing.append("resource-group (AZURE_RESOURCE_GROUP)")
-    if not workspace_id:
-        missing.append("workspace-id (LOG_ANALYTICS_WORKSPACE_ID)")
-    
-    if missing:
-        p.error(f"Missing required parameters for multi-flow mode: {', '.join(missing)}")
-    
-    def _run_batch() -> dict:
-        if log_only:
-            return collect_failed_run_errors(
-                workspace_id=workspace_id,
-                hours=hours,
-                top_n=top_n,
-                settings=settings,
-            )
-        return process_failed_runs(
             subscription_id=subscription_id,
             resource_group=resource_group,
             workspace_id=workspace_id,
-            hours=hours,
-            top_n=top_n,
-            max_concurrency=max_concurrency,
-            settings=settings,
+            poll_interval_seconds=args.poll_interval,
+            lookback_hours=args.hours,
+            use_orchestrator=ORCHESTRATOR_AVAILABLE,
             backup_dir=args.backup_dir,
-            trigger_name=args.trigger,
         )
+        monitor.start()
+        return 0
     
-    if schedule_minutes and schedule_minutes > 0:
-        while True:
-            report = _run_batch()
-            # Only print JSON output
-            print(json.dumps(report, indent=2))
-            if not args.quiet:
-                logging.warning("Sleeping %s minute(s) before next scan...", schedule_minutes)
-            time.sleep(schedule_minutes * 60)
-    else:
-        report = _run_batch()
-        # Only print JSON output
-        print(json.dumps(report, indent=2))
-        critical_statuses = ("deploy_failed", "failed", "runner_error", "subscription_read_only")
-        bad = any(
-            (r.get("remediation_status") or "") in critical_statuses
-            for r in report.get("results") or []
-        )
-        return 1 if bad else 0
+    # Single run mode
+    if not args.all_flows:
+        if not args.workflow or not args.run_id:
+            p.error("--workflow and --run-id required")
+        
+        if not subscription_id or not resource_group:
+            p.error("subscription-id and resource-group required")
+        
+        tracker = get_tracker()
+        if tracker.is_run_already_remediated(args.run_id):
+            print(f"⚠️ Run {args.run_id} already remediated")
+            return 0
+        
+        print(f"🔧 Starting LLM-based remediation for {args.workflow}/{args.run_id}...")
+        
+        if ORCHESTRATOR_AVAILABLE:
+            result = orchestrator_remediation(
+                workflow_name=args.workflow,
+                run_id=args.run_id,
+                subscription_id=subscription_id,
+                resource_group=resource_group,
+                settings=settings,
+                backup_dir=args.backup_dir,
+            )
+        else:
+            print("❌ LLM Orchestrator not available")
+            return 1
+        
+        if result.get("status") == "remediated":
+            tracker.mark_run_remediated(args.run_id, args.workflow, result.get("root_cause", "unknown"))
+            print("✅ REMEDIATED")
+        
+        print(json.dumps(result, indent=2))
+        return 0
+    
+    # Multi-flow scan
+    if not workspace_id:
+        p.error("--workspace-id required")
+    
+    report = collect_failed_run_errors(
+        workspace_id=workspace_id,
+        hours=args.hours,
+        top_n=50,
+        settings=settings,
+    )
+    print(json.dumps(report, indent=2))
+    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))    
+    sys.exit(main(sys.argv[1:]))

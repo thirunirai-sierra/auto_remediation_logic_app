@@ -1,0 +1,334 @@
+{
+  "timestamp": "2026-05-01T03:33:02.837287+00:00",
+  "workflow_name": "RUNTIME_ERRORS",
+  "run_id": "08584240782026528001197205357CU10",
+  "workflow": {
+    "properties": {
+      "provisioningState": "Succeeded",
+      "createdTime": "2026-04-29T12:03:49.2638477Z",
+      "changedTime": "2026-05-01T03:32:46.3307768Z",
+      "state": "Enabled",
+      "version": "08584240005191581611",
+      "accessEndpoint": "https://prod-19.southindia.logic.azure.com:443/workflows/8870fb40e1dc477982b9cfa2191e78be",
+      "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "contentVersion": "1.0.0.0",
+        "triggers": {
+          "manual": {
+            "type": "Request",
+            "kind": "Http",
+            "inputs": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "customerId": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string"
+                  },
+                  "amount": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "customerId",
+                  "email",
+                  "amount"
+                ]
+              }
+            }
+          }
+        },
+        "actions": {
+          "Get_Customer_Info": {
+            "runAfter": {},
+            "type": "Http",
+            "inputs": {
+              "method": "GET",
+              "uri": "https://api.customerservice.com/v1/customers/@{coalesce(coalesce(coalesce(coalesce(coalesce(coalesce(coalesce(coalesce(coalesce(coalesce(coalesce(coalesce(coalesce(triggerBody()?['customerId'], ''), ''), ''), ''), ''), ''), ''), ''), ''), ''), ''), ''), '')}",
+              "headers": {
+                "Content-Type": "application/json"
+              }
+            }
+          },
+          "Parse_Customer_Response": {
+            "runAfter": {
+              "Get_Customer_Info": [
+                "Succeeded"
+              ]
+            },
+            "type": "ParseJson",
+            "inputs": {
+              "content": "@body('Get_Customer_Info')",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "address": {
+                    "type": "object",
+                    "properties": {
+                      "street": {
+                        "type": "string"
+                      },
+                      "city": {
+                        "type": "string"
+                      },
+                      "zipcode": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "Check_Customer_Status": {
+            "actions": {
+              "Process_Payment": {
+                "runAfter": {},
+                "type": "Http",
+                "inputs": {
+                  "method": "POST",
+                  "uri": "https://api.paymentgateway.com/v2/process-payment",
+                  "headers": {
+                    "Content-Type": "application/json"
+                  },
+                  "body": {
+                    "customerId": "@body('Parse_Customer_Response')['id']",
+                    "amount": "@triggerBody()['amount']",
+                    "currency": "USD",
+                    "metadata": {
+                      "timestamp": "@utcNow()",
+                      "source": "logicapp"
+                    }
+                  }
+                }
+              },
+              "Parse_Payment_Response": {
+                "runAfter": {
+                  "Process_Payment": [
+                    "Succeeded"
+                  ]
+                },
+                "type": "ParseJson",
+                "inputs": {
+                  "content": "@body('Process_Payment')",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "transactionId": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string"
+                      },
+                      "amount": {
+                        "type": "number"
+                      },
+                      "timestamp": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "Send_Confirmation_Email": {
+                "runAfter": {
+                  "Parse_Payment_Response": [
+                    "Succeeded"
+                  ]
+                },
+                "type": "Http",
+                "inputs": {
+                  "method": "POST",
+                  "uri": "https://api.emailservice.com/send-email",
+                  "headers": {
+                    "Content-Type": "application/json"
+                  },
+                  "body": {
+                    "to": "@triggerBody()['email']",
+                    "subject": "Payment Confirmation",
+                    "body": "Your payment of $@{triggerBody()['amount']} has been processed successfully. Transaction ID: @{body('Parse_Payment_Response')['transactionId']}"
+                  }
+                }
+              },
+              "Update_Customer_Record": {
+                "runAfter": {
+                  "Send_Confirmation_Email": [
+                    "Succeeded"
+                  ]
+                },
+                "type": "Http",
+                "inputs": {
+                  "method": "PATCH",
+                  "uri": "https://api.customerservice.com/v1/customers/@{body('Parse_Customer_Response')['id']}/last-transaction",
+                  "headers": {
+                    "Content-Type": "application/json"
+                  },
+                  "body": {
+                    "transactionId": "@body('Parse_Payment_Response')['transactionId']",
+                    "amount": "@triggerBody()['amount']",
+                    "timestamp": "@body('Parse_Payment_Response')['timestamp']"
+                  }
+                }
+              }
+            },
+            "runAfter": {
+              "Parse_Customer_Response": [
+                "Succeeded"
+              ]
+            },
+            "else": {
+              "actions": {
+                "Send_Rejection_Email": {
+                  "runAfter": {},
+                  "type": "Http",
+                  "inputs": {
+                    "method": "POST",
+                    "uri": "https://api.emailservice.com/send-email",
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                    "body": {
+                      "to": "@triggerBody()['email']",
+                      "subject": "Payment Rejected",
+                      "body": "Your payment request has been rejected. Account status: @{body('Parse_Customer_Response')['status']}"
+                    }
+                  }
+                }
+              }
+            },
+            "expression": {
+              "equals": [
+                "@body('Parse_Customer_Response')['status']",
+                "active"
+              ]
+            },
+            "type": "If"
+          },
+          "Return_Success_Response": {
+            "runAfter": {
+              "Check_Customer_Status": [
+                "Succeeded"
+              ]
+            },
+            "type": "Response",
+            "kind": "Http",
+            "inputs": {
+              "statusCode": 200,
+              "body": {
+                "message": "Process completed successfully",
+                "customerId": "@triggerBody()['customerId']"
+              }
+            }
+          }
+        },
+        "outputs": {}
+      },
+      "parameters": {},
+      "endpointsConfiguration": {
+        "workflow": {
+          "outgoingIpAddresses": [
+            {
+              "address": "104.211.210.192"
+            },
+            {
+              "address": "104.211.218.202"
+            },
+            {
+              "address": "52.172.101.114"
+            },
+            {
+              "address": "52.172.101.181"
+            },
+            {
+              "address": "52.140.5.116"
+            },
+            {
+              "address": "52.172.98.23"
+            },
+            {
+              "address": "52.140.2.252"
+            },
+            {
+              "address": "52.140.0.225"
+            },
+            {
+              "address": "52.140.7.114"
+            },
+            {
+              "address": "52.172.101.204"
+            }
+          ],
+          "accessEndpointIpAddresses": [
+            {
+              "address": "52.140.4.233"
+            },
+            {
+              "address": "52.172.100.99"
+            },
+            {
+              "address": "52.140.5.154"
+            },
+            {
+              "address": "52.140.1.153"
+            },
+            {
+              "address": "52.172.96.103"
+            },
+            {
+              "address": "52.140.2.150"
+            },
+            {
+              "address": "52.172.103.116"
+            },
+            {
+              "address": "52.172.99.31"
+            }
+          ]
+        },
+        "connector": {
+          "outgoingIpAddresses": [
+            {
+              "address": "13.71.127.26"
+            },
+            {
+              "address": "13.71.125.22"
+            },
+            {
+              "address": "20.192.184.32/27"
+            },
+            {
+              "address": "40.78.194.240/28"
+            },
+            {
+              "address": "20.192.152.64/27"
+            },
+            {
+              "address": "20.192.152.96/28"
+            },
+            {
+              "address": "52.172.80.0/26"
+            }
+          ]
+        }
+      }
+    },
+    "id": "/subscriptions/c474dc7c-4f50-490b-a886-847fad508a71/resourceGroups/logicapp-rg/providers/Microsoft.Logic/workflows/RUNTIME_ERRORS",
+    "name": "RUNTIME_ERRORS",
+    "type": "Microsoft.Logic/workflows",
+    "location": "southindia"
+  }
+}

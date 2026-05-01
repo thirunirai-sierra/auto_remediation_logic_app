@@ -10,7 +10,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from agents.Knowledge_agent import KnowledgeAgent
+from agents.Knowledge_agent.knowledge_base import KnowledgeAgent
 
 # Initialize Knowledge Agent ONCE (global)
 kb = KnowledgeAgent()

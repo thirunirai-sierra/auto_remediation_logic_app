@@ -1,10 +1,12 @@
 """
 Orchestrates fetch → analyze → remediate → re-run → structured output.
+Now with LLM-powered fix generation!
 """
 
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -28,13 +30,13 @@ from remediation import (
     apply_remediation_patch,
     locate_action_node,
     strip_read_only_for_put,
+    fix_condition_contains_null,
 )
 
-# Set logger to only show warnings and errors
+# Set logger
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.WARNING)
+logger.setLevel(logging.INFO)
 
-# Scope / control actions: failure here is usually a rollup; real fix targets leaf actions.
 _CONTAINER_TYPES = frozenset(
     {
         "scope",
@@ -61,7 +63,6 @@ def _end_time(action: Dict[str, Any]) -> str:
 
 
 def _deep_find_status_code(obj: Any, depth: int = 0) -> Optional[int]:
-    """Find first numeric statusCode in nested run outputs (HTTP actions nest deeply)."""
     if depth > 14:
         return None
     if isinstance(obj, dict):
@@ -84,12 +85,116 @@ def _deep_find_status_code(obj: Any, depth: int = 0) -> Optional[int]:
     return None
 
 
+def _get_action_uri(workflow: Dict[str, Any]) -> str:
+    """Extract action URI for debugging."""
+    try:
+        actions = workflow.get("properties", {}).get("definition", {}).get("actions", {})
+        for action in actions.values():
+            if action.get("type", "").lower() in ("http", "httpwebhook"):
+                inputs = action.get("inputs", {})
+                if isinstance(inputs, dict):
+                    uri = inputs.get("uri", "")
+                    if uri:
+                        return uri[:100]
+        return "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _get_llm_fix_for_workflow(
+    workflow_definition: Dict[str, Any],
+    failed_action_name: str,
+    error_message: str,
+    error_type: str,
+    settings: Settings,
+) -> Optional[Dict[str, Any]]:
+    """
+    Call LLM to generate the fixed workflow definition.
+    This is the key function that enables LLM to actually fix the workflow!
+    """
+    if not settings.azure_openai_endpoint or not settings.azure_openai_api_key:
+        logger.warning("[LLM] Azure OpenAI not configured, cannot generate LLM fix")
+        return None
+    
+    try:
+        url = (
+            f"{settings.azure_openai_endpoint.rstrip('/')}/openai/deployments/"
+            f"{settings.azure_openai_deployment}/chat/completions"
+            f"?api-version={settings.azure_openai_api_version}"
+        )
+        
+        system_prompt = """You are an Azure Logic Apps expert. Your task is to FIX the workflow definition.
+Given the current workflow definition and an error, return the COMPLETE FIXED workflow definition.
+Focus on fixing the specific action that failed.
+
+CRITICAL RULES:
+1. Return ONLY valid JSON - the complete workflow definition
+2. For contains() errors with null values, wrap the first argument with coalesce():
+   - String: contains(coalesce(expr, ''), 'value')
+   - Array: contains(coalesce(expr, createArray()), 'value')
+   - Object: contains(keys(coalesce(expr, {})), 'key')
+3. Keep all other parts of the workflow identical
+4. Do not add any explanation or markdown - ONLY the JSON workflow definition
+5. Preserve all existing actions, triggers, and parameters
+
+EXAMPLES:
+Wrong: @contains(triggerBody()?['field'], 'error')
+Fixed: @contains(coalesce(triggerBody()?['field'], ''), 'error')
+
+Wrong: @contains(body('GetItems')?['value'], 'item')
+Fixed: @contains(coalesce(body('GetItems')?['value'], createArray()), 'item')
+
+Return the complete fixed workflow definition as JSON only."""
+        
+        user_prompt = f"""Error Type: {error_type}
+Error Message: {error_message}
+Failed Action: {failed_action_name}
+
+Current Workflow Definition:
+{json.dumps(workflow_definition, indent=2)[:15000]}
+
+Return the COMPLETE FIXED workflow definition as JSON."""
+        
+        logger.info(f"[LLM] Generating fix for {failed_action_name}...")
+        
+        response = requests.post(
+            url,
+            headers={
+                "api-key": settings.azure_openai_api_key,
+                "Content-Type": "application/json",
+            },
+            json={
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.1,
+                "max_tokens": 8000,
+            },
+            timeout=120,
+        )
+        
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"].strip()
+        
+        # Extract JSON from response
+        json_match = re.search(r"\{[\s\S]*\}", content)
+        if json_match:
+            fixed_definition = json.loads(json_match.group())
+            logger.info("[LLM] ✅ Successfully generated fixed workflow definition")
+            return fixed_definition
+        else:
+            logger.warning("[LLM] No valid JSON found in LLM response")
+            return None
+        
+    except Exception as e:
+        logger.error(f"[LLM] Fix generation failed: {e}")
+        return None
+
+
 def _score_failed_action(
     action: Dict[str, Any], definition: Optional[Dict[str, Any]]
 ) -> int:
-    """
-    Higher score = better target for auto-remediation (leaf HTTP errors, not scope rollups).
-    """
     blob = _extract_error_blob(action)
     score = 0
     if blob.get("statusCode") is not None:
@@ -129,15 +234,6 @@ def _pick_failed_action(
             failed.append(a)
     if not failed:
         return None
-    if len(failed) > 1:
-        for a in failed:
-            n = _action_display_name(a)
-            logger.debug(
-                "failed candidate %s score=%s",
-                n,
-                _score_failed_action(a, definition),
-            )
-    # Prefer highest specificity; tie-break by latest endTime
     return max(
         failed,
         key=lambda a: (_score_failed_action(a, definition), _end_time(a)),
@@ -200,7 +296,6 @@ def _build_flow_context(
     action_name: str,
     preview_limit: int = 6000,
 ) -> Dict[str, Any]:
-    """Live run + definition slice passed into RAG (ground truth for the flow)."""
     props = failed.get("properties") or {}
     ctx: Dict[str, Any] = {
         "workflow_name": workflow_name,
@@ -229,7 +324,6 @@ def _build_flow_context(
 
 
 def _analysis_extras(analysis: Dict[str, Any]) -> Dict[str, Any]:
-    """Fields to echo in API/CLI output for RAG and exact flow errors."""
     return {
         k: analysis.get(k)
         for k in (
@@ -287,7 +381,6 @@ def _is_trigger_enabled(
     try:
         trig = get_trigger(token, subscription_id, resource_group, workflow_name, trigger_name)
         state = str((trig.get("properties") or {}).get("state") or "").lower()
-        # Empty state is treated as unknown/possibly enabled to avoid false negatives.
         return state in ("", "enabled")
     except Exception:
         return False
@@ -303,9 +396,7 @@ def run_remediation(
     trigger_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    End-to-end remediation with max attempts from settings.
-
-    Returns structured result dict (see module docstring / CLI).
+    End-to-end remediation with LLM-powered fixes!
     """
     settings = settings or get_settings()
     token = get_arm_token(
@@ -345,26 +436,7 @@ def run_remediation(
     analysis = analyze_error(error_json, settings, flow_context=flow_context)
     error_type = analysis.get("error_type") or "unknown"
 
-    if (
-        error_type == "unknown"
-        and definition_early
-        and _score_failed_action(failed, definition_early) < -50
-    ):
-        logger.warning(
-            "Best failed action still looks like a container rollup (%s). "
-            "If remediation stays unknown, run with --log-level DEBUG, "
-            "enable Azure OpenAI in .env, or fix the inner HTTP/action shown in the portal.",
-            action_name,
-        )
-
     logger.info("Detected: %s", _summarize_detected_error(action_name, error_json, analysis))
-    logger.info("Analysis: %s", json.dumps(analysis, default=str))
-
-    if error_type == "401" and not (settings.auth_header_value or "").strip():
-        logger.warning(
-            "401 detected but REMEDIATION_AUTH_HEADER_VALUE is empty; "
-            "workflow will not receive new auth headers until configured."
-        )
 
     if error_type == "unknown":
         return {
@@ -387,6 +459,8 @@ def run_remediation(
 
     last_result: Dict[str, Any] = {}
     force_wildcard_etag = False
+    fix_applied = False
+    
     for attempt in range(1, settings.max_remediation_attempts + 1):
         wf = get_workflow(token, subscription_id, resource_group, workflow_name)
         backup_path: Optional[str] = None
@@ -400,31 +474,88 @@ def run_remediation(
 
         put_body = strip_read_only_for_put(wf)
         etag = "*" if force_wildcard_etag else wf.get("etag")
-        try:
-            patched = apply_remediation_patch(
-                put_body, action_name, error_type, settings, analysis=analysis
+        
+        # ================================================================
+        # STEP 1: Try LLM-based fix (INTELLIGENT FIX)
+        # ================================================================
+        patched = None
+        llm_fix_used = False
+        
+        if settings.azure_openai_endpoint and settings.azure_openai_api_key:
+            logger.info(f"[LLM] Attempting intelligent fix for {action_name}...")
+            
+            llm_fixed_definition = _get_llm_fix_for_workflow(
+                definition_early or {},
+                action_name,
+                error_json.get("message", ""),
+                error_type,
+                settings,
             )
-        except Exception as ex:
-            logger.exception("Patch failed")
-            return {
-                "run_id": run_id,
-                "error_type": error_type,
-                "fix_applied": "patch_failed",
-                "status": "failed",
-                "failed_action": action_name,
-                "detail": str(ex),
-                "backup_path": backup_path,
-                **_rca_extras(rca),
-                **_analysis_extras(analysis),
-            }
+            
+            if llm_fixed_definition:
+                logger.info("[LLM] ✅ Using LLM-generated workflow definition")
+                patched = put_body.copy()
+                if "properties" not in patched:
+                    patched["properties"] = {}
+                if "definition" not in patched["properties"]:
+                    patched["properties"]["definition"] = {}
+                patched["properties"]["definition"] = llm_fixed_definition
+                llm_fix_used = True
+            else:
+                logger.warning("[LLM] LLM fix failed, falling back to rule-based patch")
+        
+        # ================================================================
+        # STEP 2: Fallback to rule-based patch
+        # ================================================================
+        if patched is None:
+            logger.info(f"[RULE] Using rule-based patch for {action_name}")
+            try:
+                # Log before patch
+                old_uri = _get_action_uri(put_body)
+                logger.info(f"[RULE] Current URI: {old_uri}")
+                
+                patched = apply_remediation_patch(
+                    put_body, action_name, error_type, settings, analysis=analysis
+                )
+                
+                # Special handling for Condition contains() null errors
+                if error_type == "bad_request" and "contains" in str(error_json.get("message", "")).lower():
+                    logger.info("[RULE] Attempting to fix Condition contains() null error...")
+                    try:
+                        _, node = locate_action_node(patched.get("properties", {}).get("definition", {}), action_name)
+                        if fix_condition_contains_null(node, analysis):
+                            logger.info("[RULE] ✅ Condition expression fixed!")
+                    except Exception as e:
+                        logger.warning(f"[RULE] Could not fix Condition: {e}")
+                
+                new_uri = _get_action_uri(patched)
+                logger.info(f"[RULE] New URI: {new_uri}")
+                
+            except Exception as ex:
+                logger.exception("Patch failed")
+                return {
+                    "run_id": run_id,
+                    "error_type": error_type,
+                    "fix_applied": "patch_failed",
+                    "status": "failed",
+                    "failed_action": action_name,
+                    "detail": str(ex),
+                    "backup_path": backup_path,
+                    **_rca_extras(rca),
+                    **_analysis_extras(analysis),
+                }
 
+        # ================================================================
+        # STEP 3: Deploy the fix to Azure
+        # ================================================================
         logger.info(
-            "Applying fix %s to action %s (attempt %s/%s)",
-            analysis.get("fix_type"),
+            "Applying fix to %s (attempt %s/%s, %s fix)",
             action_name,
             attempt,
             settings.max_remediation_attempts,
+            "LLM" if llm_fix_used else "rule-based",
         )
+        
         try:
             put_workflow(
                 token,
@@ -434,6 +565,9 @@ def run_remediation(
                 patched,
                 etag=etag,
             )
+            logger.info(f"[DEPLOY] ✅ Workflow deployed successfully!")
+            fix_applied = True
+            
         except requests.HTTPError as he:
             resp_text = ""
             if he.response is not None and he.response.text:
@@ -446,12 +580,8 @@ def run_remediation(
                 action_type="workflow_put",
                 flow_context=flow_context,
             )
-            logger.warning(
-                "PUT workflow failed (attempt %s): %s body=%s",
-                attempt,
-                he,
-                resp_text,
-            )
+            logger.warning("PUT workflow failed (attempt %s): %s", attempt, he)
+            
             if arm_code in _NON_RETRYABLE_ARM_CODES:
                 return {
                     "run_id": run_id,
@@ -467,14 +597,15 @@ def run_remediation(
                     **_rca_extras(deploy_rca),
                     **_analysis_extras(analysis),
                 }
+            
             if attempt < settings.max_remediation_attempts and he.response is not None:
                 code = he.response.status_code
                 if code in (409, 412, 429) or 500 <= code < 600:
                     if code in (409, 412):
-                        # Conflict/precondition: relax match to wildcard on next attempt.
                         force_wildcard_etag = True
                     time.sleep(3 * attempt)
                     continue
+            
             return {
                 "run_id": run_id,
                 "error_type": error_type,
@@ -489,18 +620,23 @@ def run_remediation(
                 **_analysis_extras(analysis),
             }
 
-        definition = (
-            patched.get("properties", {}).get("definition") or {}
-        )
+        # ================================================================
+        # STEP 4: Trigger test run to verify fix
+        # ================================================================
+        definition = patched.get("properties", {}).get("definition") or {}
         trig = trigger_name or find_manual_or_recurrence_trigger(definition)
+        
         if trig and not _is_trigger_enabled(
             token, subscription_id, resource_group, workflow_name, trig
         ):
-            logger.warning("Selected trigger '%s' is disabled; skipping trigger run.", trig)
+            logger.warning("Trigger '%s' is disabled; skipping trigger run.", trig)
             trig = None
+            
         new_run_status = "trigger_skipped"
         new_run_id = None
+        
         if trig:
+            logger.info(f"[VERIFY] Triggering test run with '{trig}'...")
             resp = post_trigger_run(
                 token,
                 subscription_id,
@@ -515,45 +651,22 @@ def run_remediation(
                     parts = [p for p in loc.rstrip("/").split("/") if p]
                     if parts:
                         new_run_id = parts[-1]
+                        logger.info(f"[VERIFY] Test run triggered: {new_run_id}")
                 except Exception:
                     pass
                 new_run_status = "trigger_accepted"
             else:
                 new_run_status = f"trigger_http_{resp.status_code}"
-                logger.warning("Trigger run response: %s %s", resp.status_code, resp.text[:500])
-                trig_body = resp.text[:1000] if resp.text else ""
-                trig_code = _extract_arm_error_code(trig_body) or str(resp.status_code)
-                trigger_rca = generate_rca_from_error(
-                    error_code=trig_code,
-                    error_message=trig_body,
-                    error_location=trig,
-                    action_type="trigger",
-                    flow_context=flow_context,
-                )
-                fix_desc = f"{analysis.get('fix_type')} on {action_name}"
-                return {
-                    "run_id": run_id,
-                    "error_type": error_type,
-                    "fix_applied": fix_desc,
-                    "status": "trigger_failed",
-                    "workflow_run_status": run_status,
-                    "failed_action": action_name,
-                    "backup_path": backup_path,
-                    "new_trigger_status": new_run_status,
-                    "new_run_id": None,
-                    "remediation_attempt": attempt,
-                    "recommendation": analysis.get("recommendation"),
-                    **_rca_extras(trigger_rca),
-                    **_analysis_extras(analysis),
-                }
+                logger.warning("Trigger run response: %s", resp.status_code)
         else:
             logger.warning("No trigger found; workflow updated but not re-run.")
 
-        fix_desc = f"{analysis.get('fix_type')} on {action_name}"
+        fix_desc = f"{analysis.get('fix_type')} on {action_name} (LLM: {llm_fix_used})"
         last_result = {
             "run_id": run_id,
             "error_type": error_type,
             "fix_applied": fix_desc,
+            "fix_method": "llm" if llm_fix_used else "rule_based",
             "status": "remediated",
             "workflow_run_status": run_status,
             "failed_action": action_name,
@@ -562,12 +675,21 @@ def run_remediation(
             "new_run_id": new_run_id,
             "remediation_attempt": attempt,
             "recommendation": analysis.get("recommendation"),
+            "llm_fix_generated": llm_fix_used,
             **_rca_extras(rca),
             **_analysis_extras(analysis),
         }
         logger.info("Result: %s", json.dumps(last_result, default=str))
-
-        # Single successful deploy + trigger completes one attempt; no auto-loop on new run unless requested
         break
+
+    if not fix_applied and not last_result:
+        last_result = {
+            "run_id": run_id,
+            "error_type": error_type,
+            "fix_applied": "none",
+            "status": "failed",
+            "failed_action": action_name,
+            "message": "No fix was applied",
+        }
 
     return last_result
