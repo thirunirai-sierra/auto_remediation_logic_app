@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from analyzer import analyze_error
+from agent.classifier.analyzer import analyze_error
 from api import (
     find_manual_or_recurrence_trigger,
     get_run,

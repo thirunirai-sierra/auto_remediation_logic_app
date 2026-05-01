@@ -124,9 +124,10 @@ def get_settings() -> Settings:
         resource_group=os.getenv("AZURE_RESOURCE_GROUP"),
         log_analytics_workspace_id=os.getenv("LOG_ANALYTICS_WORKSPACE_ID"),
         multi_flow_enabled=_env_bool("MULTI_FLOW_ENABLED", False),
-        lookback_hours=_env_int("LOOKBACK_HOURS", 168),
-        top_n_runs=_env_int("TOP_N_RUNS", 20),
-        max_concurrency=_env_int("MAX_CONCURRENCY", 4),
+        # Faster defaults for day-to-day RCA runs; still fully overridable via env/CLI.
+        lookback_hours=_env_int("LOOKBACK_HOURS", 24),
+        top_n_runs=_env_int("TOP_N_RUNS", 5),
+        max_concurrency=_env_int("MAX_CONCURRENCY", 6),
         schedule_minutes=_env_int("SCHEDULE_MINUTES", 0),
         log_only=_env_bool("LOG_ONLY", False),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
