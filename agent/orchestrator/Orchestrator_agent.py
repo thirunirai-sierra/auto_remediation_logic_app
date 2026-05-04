@@ -19,21 +19,22 @@ from api.services.workflow_service import (
 from auth import get_arm_token
 from config import Settings, get_settings
 
+logger = logging.getLogger(__name__)
+
 # Import the RCA Agent (generates RCAResult via LLM)
 try:
-    from agent.rca_agent.rca import generate_rca
+    from agent.rca_agent.engine import generate_rca
 except ImportError:
     generate_rca = None
 
 # Import Fixer Agent (applies fixes via LLM)
 try:
     from agent.fixer.Fixer_agent import FixerAgent
-    print("✓ FixerAgent loaded successfully")
-except ImportError as e:
-    print(f"⚠️ FixerAgent import error: {e}")
-    FixerAgent = None
 
-logger = logging.getLogger(__name__)
+    logger.info("FixerAgent loaded successfully")
+except ImportError as e:
+    logger.warning("FixerAgent import error: %s", e)
+    FixerAgent = None
 
 
 def run_remediation(

@@ -435,6 +435,14 @@ def run_remediation(
     rca = generate_rca(actions, flow_context=flow_context)
     analysis = analyze_error(error_json, settings, flow_context=flow_context)
     error_type = analysis.get("error_type") or "unknown"
+    # Log Analytics rollups often yield generic ActionFailed text; RCA still knows template issues.
+    rc_root = str(rca.get("root_cause") or "").lower()
+    if error_type == "unknown" and rc_root in (
+        "payload_or_schema_error",
+        "null_reference_error",
+    ):
+        error_type = "bad_request"
+        logger.info("Promoted error_type unknown -> bad_request from RCA root_cause=%s", rc_root)
 
     logger.info("Detected: %s", _summarize_detected_error(action_name, error_json, analysis))
 
@@ -518,15 +526,19 @@ def run_remediation(
                     put_body, action_name, error_type, settings, analysis=analysis
                 )
                 
-                # Special handling for Condition contains() null errors
-                if error_type == "bad_request" and "contains" in str(error_json.get("message", "")).lower():
-                    logger.info("[RULE] Attempting to fix Condition contains() null error...")
+                # Template / contains(null): use RCA + classifier text, not only top-level error message.
+                if error_type == "bad_request":
+                    logger.info("[RULE] Attempting contains() null-safety patch on failed action...")
                     try:
-                        _, node = locate_action_node(patched.get("properties", {}).get("definition", {}), action_name)
-                        if fix_condition_contains_null(node, analysis):
-                            logger.info("[RULE] ✅ Condition expression fixed!")
+                        _, node = locate_action_node(
+                            patched.get("properties", {}).get("definition", {}), action_name
+                        )
+                        if fix_condition_contains_null(
+                            node, analysis, error_json=error_json, rca=rca
+                        ):
+                            logger.info("[RULE] Contains() null-safety patch applied")
                     except Exception as e:
-                        logger.warning(f"[RULE] Could not fix Condition: {e}")
+                        logger.warning("[RULE] Could not apply contains() patch: %s", e)
                 
                 new_uri = _get_action_uri(patched)
                 logger.info(f"[RULE] New URI: {new_uri}")

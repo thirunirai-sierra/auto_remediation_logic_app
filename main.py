@@ -46,16 +46,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Try to import orchestrator
-ORCHESTRATOR_AVAILABLE = False
-try:
-    from agent.orchestrator.Orchestrator_agent import run_remediation as orchestrator_remediation
-    ORCHESTRATOR_AVAILABLE = True
-    logger.info("Orchestrator agent available")
-except ImportError as e:
-    logger.warning(f"Orchestrator agent not available: {e}")
-
-# Setup logging
+# Setup logging before optional imports that may log
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -69,6 +60,15 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+# Try to import orchestrator
+ORCHESTRATOR_AVAILABLE = False
+try:
+    from agent.orchestrator.Orchestrator_agent import run_remediation as orchestrator_remediation
+    ORCHESTRATOR_AVAILABLE = True
+    logger.info("Orchestrator agent available")
+except ImportError as e:
+    logger.warning("Orchestrator agent not available: %s", e)
 
 
 @dataclass

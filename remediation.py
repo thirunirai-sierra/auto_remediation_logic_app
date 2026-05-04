@@ -7,7 +7,9 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from config import Settings
+
 import logging
+
 # Set logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -59,6 +61,13 @@ def locate_action_node(
                 hit = walk(inner, path_prefix + [parent_name, "actions"])
                 if hit:
                     return hit
+            else_block = parent.get("else")
+            if isinstance(else_block, dict):
+                inner_else = else_block.get("actions")
+                if isinstance(inner_else, dict):
+                    hit = walk(inner_else, path_prefix + [parent_name, "else", "actions"])
+                    if hit:
+                        return hit
         return None
 
     actions = definition.get("actions")
@@ -171,55 +180,98 @@ def strip_read_only_for_put(workflow_get_response: Dict[str, Any]) -> Dict[str, 
         ):
             props.pop(ro, None)
     return body
+
+
+def _contains_needs_null_guard(expr: str) -> bool:
+    x = (expr or "").lower()
+    return "contains(" in x and "coalesce(" not in x
+
+
+def _add_null_guard_to_contains(expr: str) -> Tuple[str, bool]:
+    """Wrap first argument of contains(a, b) with coalesce(a, '') when safe."""
+    if not _contains_needs_null_guard(expr):
+        return expr, False
+    pattern = re.compile(r"contains\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)", re.IGNORECASE)
+
+    def repl(match: re.Match) -> str:
+        first = match.group(1).strip()
+        second = match.group(2).strip()
+        guarded = f"coalesce({first}, '')"
+        return f"contains({guarded}, {second})"
+
+    updated, count = pattern.subn(repl, expr)
+    return updated, count > 0
+
+
+def _recursively_patch_contains(node: Any) -> bool:
+    """Patch contains() in string fields under node (single action subtree)."""
+    changed = False
+    if isinstance(node, dict):
+        for key, value in list(node.items()):
+            if isinstance(value, str):
+                patched, did = _add_null_guard_to_contains(value)
+                if did:
+                    node[key] = patched
+                    changed = True
+            elif isinstance(value, (dict, list)):
+                if _recursively_patch_contains(value):
+                    changed = True
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            if isinstance(value, str):
+                patched, did = _add_null_guard_to_contains(value)
+                if did:
+                    node[i] = patched
+                    changed = True
+            elif isinstance(value, (dict, list)):
+                if _recursively_patch_contains(value):
+                    changed = True
+    return changed
+
+
+def _signals_contains_null_issue(
+    error_json: Optional[Dict[str, Any]],
+    analysis: Optional[Dict[str, Any]],
+    rca: Optional[Dict[str, Any]],
+) -> bool:
+    """True when telemetry/RCA indicates InvalidTemplate / contains / null."""
+    parts = [
+        str((error_json or {}).get("message") or ""),
+        str((error_json or {}).get("code") or ""),
+        str((analysis or {}).get("exact_error_message") or ""),
+        str((analysis or {}).get("root_cause") or ""),
+        str((rca or {}).get("exact_issue") or ""),
+        str((rca or {}).get("solution") or ""),
+        str((rca or {}).get("root_cause") or ""),
+    ]
+    blob = " ".join(parts).lower()
+    rc = str((rca or {}).get("root_cause") or "").lower()
+    if rc in ("payload_or_schema_error", "null_reference_error"):
+        return True
+    ar = str((analysis or {}).get("root_cause") or "").lower()
+    if ar in ("payload_or_schema_error", "null_reference_error"):
+        return True
+    if "contains" in blob and ("null" in blob or "invalidtemplate" in blob):
+        return True
+    return False
+
+
 def fix_condition_contains_null(
-    node: Dict[str, Any], analysis: Optional[Dict[str, Any]]
+    node: Dict[str, Any],
+    analysis: Optional[Dict[str, Any]] = None,
+    *,
+    error_json: Optional[Dict[str, Any]] = None,
+    rca: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """
-    Fix Condition action where contains() receives null value.
-    Wraps the first argument with coalesce() to provide a default.
+    Fix If/Condition (and similar) actions where contains() receives null.
+    Patches string expression fields anywhere under the action node.
     """
     if not isinstance(node, dict):
         return False
-    
-    # Get the condition expression
-    expression = node.get("expression")
-    if not isinstance(expression, str):
+    if not _signals_contains_null_issue(error_json, analysis, rca):
         return False
-    
-    # Check if this is a contains() null error
-    error_msg = str((analysis or {}).get("exact_error_message") or "")
-    if "contains" not in error_msg.lower() or "null" not in error_msg.lower():
-        return False
-    
-    import re
-    
-    # Pattern to find contains(..., ...) and wrap first argument
-    pattern = r"contains\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)"
-    
-    def wrap_first_arg(match):
-        first_arg = match.group(1).strip()
-        second_arg = match.group(2).strip()
-        
-        # Detect type from context
-        if '"' in second_arg:
-            # String value - wrap with empty string default
-            wrapped_first = f"coalesce({first_arg}, '')"
-        elif "createArray" in first_arg or "items" in first_arg or "value" in first_arg:
-            # Array - wrap with empty array
-            wrapped_first = f"coalesce({first_arg}, createArray())"
-        else:
-            # Default to string
-            wrapped_first = f"coalesce({first_arg}, '')"
-        
-        return f"contains({wrapped_first}, {second_arg})"
-    
-    new_expression = re.sub(pattern, wrap_first_arg, expression)
-    
-    if new_expression != expression:
-        node["expression"] = new_expression
-        logger.info(f"[FIX] Condition expression fixed!")
-        logger.info(f"  Old: {expression[:100]}...")
-        logger.info(f"  New: {new_expression[:100]}...")
-        return True
-    
-    return False
+    changed = _recursively_patch_contains(node)
+    if changed:
+        logger.info("[FIX] Applied contains() null-safety (coalesce) within failed action")
+    return changed

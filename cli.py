@@ -28,14 +28,14 @@ ORCHESTRATOR_AVAILABLE = False
 try:
     from Orchestrator_agent import run_remediation as orchestrator_remediation
     ORCHESTRATOR_AVAILABLE = True
-    print("✓ LLM-based Orchestrator loaded")
+    print("[OK] LLM-based Orchestrator loaded")
 except ImportError:
     try:
         from agent.orchestrator.Orchestrator_agent import run_remediation as orchestrator_remediation
         ORCHESTRATOR_AVAILABLE = True
-        print("✓ Orchestrator loaded")
+        print("[OK] Orchestrator loaded")
     except ImportError as e:
-        print(f"⚠️ Orchestrator not available: {e}")
+        print(f"[WARN] Orchestrator not available: {e}")
 
 # Fallback to legacy if needed
 try:
