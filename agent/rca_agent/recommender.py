@@ -7,7 +7,7 @@ from agent.observer.error_detector import (
     ROOT_CAUSE_CONN_REFUSED,
     ROOT_CAUSE_DNS,
     ROOT_CAUSE_NOT_FOUND,
-    ROOT_CAUSE_NULL,
+    ROOT_CAUSE_NULL, 
     ROOT_CAUSE_SCHEMA,
     ROOT_CAUSE_THROTTLING,
     ROOT_CAUSE_TIMEOUT,
