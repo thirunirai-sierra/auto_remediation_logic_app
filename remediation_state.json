@@ -172,11 +172,13 @@
     "08584237197123672295735326481CU25": "2026-05-04T16:24:36.374808",
     "08584237177473247119271530147CU03": "2026-05-04T16:49:19.785783",
     "08584237180523234366095105474CU30": "2026-05-04T16:50:19.281664",
-    "08584236493775758571377954560CU29": "2026-05-05T14:13:11.295324",
-    "08584236495811817500476447733CU20": "2026-05-05T14:13:56.563151",
     "08584236499061999348324309609CU29": "2026-05-05T14:24:56.650516",
     "08584236499184022943933133876CU11": "2026-05-05T14:25:39.146599",
-    "08584236500126292628243116589CU06": "2026-05-05T14:27:20.847894"
+    "08584236500126292628243116589CU06": "2026-05-05T14:27:20.847894",
+    "08584236499945232128506730681CU05": "2026-05-05T14:43:22.707852",
+    "08584236493775758571377954560CU29": "2026-05-05T15:14:35.084472",
+    "08584236330957059896571203390CU04": "2026-05-05T15:23:05.944606",
+    "08584236495811817500476447733CU20": "2026-05-05T15:25:40.994767"
   },
   "workflow_states": {
     "test_workflow": {
@@ -201,15 +203,15 @@
     },
     "ERROR-FLOW": {
       "workflow_name": "ERROR-FLOW",
-      "last_fixed_at": "2026-05-05T14:27:20.847894",
-      "last_fixed_run_id": "08584236500126292628243116589CU06",
-      "error_type_fixed": "The Compose action evaluates a div() expression where the second argument (denominator) resolves to null because the upstream value is missing, not initialized, or not a numeric type.",
+      "last_fixed_at": "2026-05-05T15:25:40.994767",
+      "last_fixed_run_id": "08584236495811817500476447733CU20",
+      "error_type_fixed": "The Compose action evaluates a div() expression whose second argument resolves to Null at runtime (missing/empty/uninitialized value), and the template function div() requires a numeric denominator.",
       "workflow_hash": "",
-      "fix_count": 154,
+      "fix_count": 158,
       "last_successful_run_at": null,
       "is_healthy": false
     }
   },
   "workflow_hashes": {},
-  "last_updated": "2026-05-05T14:27:20.848906"
+  "last_updated": "2026-05-05T15:25:40.994767"
 }

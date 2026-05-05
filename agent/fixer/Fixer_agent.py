@@ -11,7 +11,6 @@ import re
 import time
 from typing import Any, Dict, Optional
 from datetime import datetime, timezone
-from pathlib import Path
 
 import requests
 
@@ -67,12 +66,7 @@ class FixerAgent:
                 workflow_name=workflow_name,
             )
             
-            # 2. Save backup
-            backup_dir = workflow_context.get("backup_dir")
-            if backup_dir:
-                self._save_backup(workflow, workflow_name, run_id, backup_dir)
-            
-            # 3. Get the failed action details
+            # 2. Get the failed action details
             definition = workflow.get("properties", {}).get("definition", {})
             try:
                 _, failed_action = locate_action_node(definition, failed_action_name)
@@ -80,7 +74,7 @@ class FixerAgent:
                 failed_action = {}
             action_type = (failed_action or {}).get("type", "unknown")
             
-            # 4. Generate fix strategy based on error type
+            # 3. Generate fix strategy based on error type
             root_cause = rca_result.get("root_cause", "unknown")
             exact_issue = rca_result.get("exact_issue", "")
             
@@ -96,7 +90,7 @@ class FixerAgent:
             
             logger.info(f"[FIXER] Fix strategy: {fix_strategy.get('strategy_description', 'N/A')}")
             
-            # 5. Apply the fix
+            # 4. Apply the fix
             fixed_workflow = self._apply_fix_to_workflow(
                 workflow=workflow,
                 fix_strategy=fix_strategy,
@@ -119,7 +113,7 @@ class FixerAgent:
                     "error": "No applicable fix changes generated",
                 }
 
-            # 6. Deploy to Azure
+            # 5. Deploy to Azure
             result = self._deploy_workflow_fix(
                 subscription_id=workflow_context.get("subscription_id"),
                 resource_group=workflow_context.get("resource_group"),
@@ -479,25 +473,6 @@ class FixerAgent:
         
         return {"success": False, "error": "Max retries exceeded"}
     
-    def _save_backup(self, workflow: Dict[str, Any], workflow_name: str, run_id: str, backup_dir: str):
-        """Save workflow backup."""
-        try:
-            backup_path = Path(backup_dir) / f"{workflow_name}_{run_id[:8]}.backup.json"
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            with open(backup_path, "w") as f:
-                json.dump({
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "workflow_name": workflow_name,
-                    "run_id": run_id,
-                    "workflow": workflow,
-                }, f, indent=2, default=str)
-            
-            logger.info(f"[FIXER] Backup saved to {backup_path}")
-        except Exception as e:
-            logger.warning(f"[FIXER] Could not save backup: {e}")
-
-
 # Singleton
 _fixer_instance = None
 

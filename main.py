@@ -485,7 +485,7 @@ def run_once(settings: Settings) -> int:
         poll_interval_seconds=60,
         lookback_hours=settings.lookback_hours,
         use_orchestrator=True,
-        backup_dir="./backups",
+        backup_dir=None,
     )
     
     monitor._poll_and_remediate()
@@ -510,7 +510,7 @@ def run_daemon(settings: Settings) -> None:
         poll_interval_seconds=60,
         lookback_hours=settings.lookback_hours,
         use_orchestrator=True,
-        backup_dir="./backups",
+        backup_dir=None,
     )
     
     # Start monitor (blocks until stopped)
@@ -524,7 +524,7 @@ def run_server(settings: Settings) -> None:
         poll_interval_seconds=60,
         lookback_hours=settings.lookback_hours,
         use_orchestrator=True,
-        backup_dir="./backups",
+        backup_dir=None,
     )
     
     api = RemediationAPI(settings, monitor)
@@ -548,7 +548,7 @@ def run_full(settings: Settings) -> None:
         poll_interval_seconds=60,
         lookback_hours=settings.lookback_hours,
         use_orchestrator=True,
-        backup_dir="./backups",
+        backup_dir=None,
     )
     
     # Start monitor in background thread
@@ -608,7 +608,11 @@ Examples:
     parser.add_argument("-g", "--resource-group", help="Resource group (legacy mode)")
     
     # General options
-    parser.add_argument("--backup-dir", default="./backups", help="Backup directory")
+    parser.add_argument(
+        "--backup-dir",
+        default=None,
+        help="Optional backup directory (disabled by default)",
+    )
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     
     args = parser.parse_args()

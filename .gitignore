@@ -25,6 +25,8 @@ build/
 # Logs and runtime artifacts
 *.log
 workflow_backup_*.json
+*.backup.json
+backups/
 
 # OS/editor artifacts
 .DS_Store

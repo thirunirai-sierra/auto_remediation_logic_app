@@ -218,7 +218,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-g", "--resource-group", required=False)
     p.add_argument("-w", "--workflow", default=None)
     p.add_argument("-r", "--run-id", default=None)
-    p.add_argument("-b", "--backup-dir", default="./backups")
+    p.add_argument(
+        "-b",
+        "--backup-dir",
+        default=None,
+        help="Optional backup directory (disabled by default)",
+    )
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--stats", action="store_true")

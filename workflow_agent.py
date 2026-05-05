@@ -459,11 +459,8 @@ def run_remediation(
             **_analysis_extras(analysis),
         }
 
-    backup_enabled = bool(backup_dir)
-    ts: Optional[str] = None
-    if backup_enabled:
-        os.makedirs(backup_dir, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    # Backups are permanently disabled: do not create runtime JSON snapshots.
+    backup_enabled = False
 
     last_result: Dict[str, Any] = {}
     force_wildcard_etag = False
@@ -472,13 +469,6 @@ def run_remediation(
     for attempt in range(1, settings.max_remediation_attempts + 1):
         wf = get_workflow(token, subscription_id, resource_group, workflow_name)
         backup_path: Optional[str] = None
-        if backup_enabled and backup_dir and ts:
-            backup_path = os.path.join(
-                backup_dir, f"workflow_backup_{workflow_name}_{ts}_a{attempt}.json"
-            )
-            with open(backup_path, "w", encoding="utf-8") as f:
-                json.dump(wf, f, indent=2)
-            logger.info("Backed up workflow to %s", backup_path)
 
         put_body = strip_read_only_for_put(wf)
         etag = "*" if force_wildcard_etag else wf.get("etag")
