@@ -1,15 +1,15 @@
 {
-  "timestamp": "2026-05-04T11:20:13.714013+00:00",
-  "workflow_name": "ERROR-FLOW",
-  "run_id": "08584237180523234366095105474CU30",
+  "timestamp": "2026-05-05T08:59:27.100435+00:00",
+  "workflow_name": "DataType-FLOW",
+  "run_id": "08584236366276988744004452185CU30",
   "workflow": {
     "properties": {
       "provisioningState": "Succeeded",
-      "createdTime": "2026-05-04T06:34:32.9197266Z",
-      "changedTime": "2026-05-04T11:19:16.5464901Z",
+      "createdTime": "2026-05-05T06:22:52.3534692Z",
+      "changedTime": "2026-05-05T06:24:39.1846688Z",
       "state": "Enabled",
-      "version": "08584237133289538370",
-      "accessEndpoint": "https://prod-30.southindia.logic.azure.com:443/workflows/dd060cacddf44ddb8be516cf5e82dd54",
+      "version": "08584236446062919303",
+      "accessEndpoint": "https://prod-10.southindia.logic.azure.com:443/workflows/dba50e430fc049e0ae2ad7dec9d14c40",
       "definition": {
         "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
         "contentVersion": "1.0.0.0",
@@ -29,14 +29,13 @@
           "Compose": {
             "runAfter": {},
             "type": "Compose",
-            "inputs": "@if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, if(equals(coalesce(triggerBody()?['value'], 0), 0), 0, div(10, triggerBody()?['value'])))))))))))))))))))))))"
+            "inputs": "@add(5, triggerBody()?['value'])"
           }
         },
         "outputs": {}
       },
       "parameters": {
         "$connections": {
-          "type": "Object",
           "value": {}
         }
       },
@@ -128,8 +127,8 @@
         }
       }
     },
-    "id": "/subscriptions/4876617b-2198-4d34-8548-850ce504e7c8/resourceGroups/logic-app-rg/providers/Microsoft.Logic/workflows/ERROR-FLOW",
-    "name": "ERROR-FLOW",
+    "id": "/subscriptions/4876617b-2198-4d34-8548-850ce504e7c8/resourceGroups/logic-app-rg/providers/Microsoft.Logic/workflows/DataType-FLOW",
+    "name": "DataType-FLOW",
     "type": "Microsoft.Logic/workflows",
     "location": "southindia"
   }
