@@ -4,7 +4,22 @@
     "08584235596815960612696824507CU04": "2026-05-06T15:27:03.461062",
     "08584236322056128862689593174CU18": "2026-05-06T15:31:11.377503",
     "08584235508324806066851744584CU09": "2026-05-06T15:53:38.360409",
-    "Logic_Apps_test:08584235423489140498349845457CU21": "2026-05-06T16:26:02.313958"
+    "Logic_Apps_test:08584235423489140498349845457CU21": "2026-05-06T16:26:02.313958",
+    "08584235385333219480965349639CU20": "2026-05-06T17:25:23.560570",
+    "08584235386538985829249502586CU01": "2026-05-06T17:25:55.154857"
   },
-  "workflow_versions": {}
+  "workflow_states": {
+    "ERROR-FLOW": {
+      "workflow_name": "ERROR-FLOW",
+      "last_fixed_at": "2026-05-06T17:25:55.154857",
+      "last_fixed_run_id": "08584235386538985829249502586CU01",
+      "error_type_fixed": "The Compose action uses the div() function where the second (denominator) argument evaluated to null at runtime, likely because the upstream value was missing, not initialized, or not produced due to branching/condition logic.",
+      "workflow_hash": "",
+      "fix_count": 2,
+      "last_successful_run_at": null,
+      "is_healthy": false
+    }
+  },
+  "workflow_hashes": {},
+  "last_updated": "2026-05-06T17:25:55.155880"
 }
