@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchPipelineStatus,
@@ -42,6 +42,7 @@ export default function Pipeline() {
   const qc = useQueryClient();
   const [toggling, setToggling] = useState(false);
   const [togglingAutoFix, setTogglingAutoFix] = useState(false);
+  const [traceSearch, setTraceSearch] = useState("");
 
   // ── Queries ──────────────────────────────────────────────────────────────
   const { data: pipelineData } = useQuery({
@@ -96,6 +97,19 @@ export default function Pipeline() {
   const incidents: TraceIncident[] = (traceData?.incidents ?? []) as TraceIncident[];
   const AGENT_META = SPECIALIST_AGENTS;
   const STAGE_ORDER = SPECIALIST_ORDER;
+
+  const normalizeFlowName = (value: string | undefined) =>
+    (value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  const filteredIncidents = useMemo(() => {
+    const q = normalizeFlowName(traceSearch.trim());
+    if (!q) return incidents;
+    return incidents.filter((inc) => {
+      // Search is intentionally scoped to integration flow name only.
+      const flow = normalizeFlowName(inc.iflow_name || inc.iflow_id || "");
+      return flow === q;
+    });
+  }, [incidents, traceSearch]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -188,12 +202,21 @@ export default function Pipeline() {
         </div>
         <div className={styles.traceSearch}>
           <span className={styles.traceSearchIcon}>🔍</span>
-          <input className={styles.traceSearchInput} placeholder="search integration flow" />
+          <input
+            className={styles.traceSearchInput}
+            placeholder="search integration flow"
+            value={traceSearch}
+            onChange={(e) => setTraceSearch(e.target.value)}
+          />
         </div>
       </div>
       <div className={styles.traceTable}>
-        {incidents.length === 0 ? (
-          <div className={styles.traceEmpty}>No incidents yet. Start the pipeline to begin processing.</div>
+        {filteredIncidents.length === 0 ? (
+          <div className={styles.traceEmpty}>
+            {traceSearch.trim()
+              ? "No matching integration flow found."
+              : "No incidents yet. Start the pipeline to begin processing."}
+          </div>
         ) : (
           <table className={styles.table}>
             <thead>
@@ -206,7 +229,7 @@ export default function Pipeline() {
               </tr>
             </thead>
             <tbody>
-              {incidents.map((inc) => (
+              {filteredIncidents.map((inc) => (
                 <tr key={inc.incident_id}>
                   <td className={styles.tdIflow} title={inc.iflow_name || inc.iflow_id || inc.message_guid || ""}>
                     {inc.iflow_name || (
