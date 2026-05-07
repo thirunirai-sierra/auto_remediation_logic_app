@@ -320,6 +320,25 @@ export async function approveIncident(
 export async function fetchPipelineTrace(
   limit = 20
 ): Promise<{ incidents: unknown[]; total: number }> {
+  const dbIncidents = await requestMaybe<LogIncident[]>(`${LOG_API_BASE}/incidents?top=${limit}`);
+  if (dbIncidents) {
+    const incidents = dbIncidents.map((item) =>
+      normalizeIncidentForUi({
+        incident_id: item.incidentId ?? "-",
+        message_guid: item.incidentId ?? "-",
+        iflow_name: item.integrationScenario ?? "-",
+        iflow_id: item.integrationScenario ?? "-",
+        error_type: item.errorType ?? "unknown",
+        status: item.status ?? "FAILED",
+        root_cause: item.rootCause ?? item.errorMessage ?? null,
+        proposed_fix: null,
+        created_at: item.created ?? item.time ?? new Date().toISOString(),
+        updated_at: item.time ?? item.created ?? new Date().toISOString(),
+      }),
+    );
+    return { incidents, total: incidents.length };
+  }
+
   const data = await request<{ incidents: unknown[]; total: number }>(
     `${API_BASE}/autonomous/incidents?limit=${limit}`,
   );
@@ -420,6 +439,9 @@ export interface LogIncident {
   errorType: string | null;
   errorMessage: string | null;
   time: string | null;
+  rootCause?: string | null;
+  status?: string | null;
+  created?: string | null;
 }
 
 export async function fetchLogIncidents(): Promise<LogIncident[]> {
