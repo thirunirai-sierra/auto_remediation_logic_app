@@ -86,8 +86,8 @@ export default function ShellLayout({ children }: ShellLayoutProps) {
         <span className={styles.topBarSpacer} />
 
         <div className={styles.topBarBadge}>
-          <span className={styles.topBarBadgeIcon}>S</span>
-          SAP CPI
+          <span className={styles.topBarBadgeIcon}>A</span>
+          Azure
         </div>
 
         <div className={styles.userPill}>

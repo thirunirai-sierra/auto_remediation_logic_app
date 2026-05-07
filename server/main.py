@@ -394,9 +394,12 @@ class RemediationAPI:
                         WORKFLOW_NAME,
                         COALESCE(ERROR_CODE, ERROR_CATEGORY),
                         ERROR_MESSAGE,
-                        COALESCE(UPDATED_AT, CREATED_AT)
+                        COALESCE(UPDATED_AT, CREATED_AT),
+                        COALESCE(RCA_ROOT_CAUSE, ''),
+                        COALESCE(STATUS, 'FAILED'),
+                        COALESCE(CREATED_AT, UPDATED_AT)
                     FROM "{table}"
-                    WHERE UPPER(COALESCE(STATUS, '')) IN ('FAILED', 'ERROR', 'IN_PROGRESS', 'PENDING')
+                    WHERE UPPER(COALESCE(STATUS, '')) IN ('FAILED', 'ERROR', 'IN_PROGRESS', 'PENDING', 'AUTO_FIXED', 'FIX_VERIFIED', 'HUMAN_FIXED')
                     ORDER BY COALESCE(UPDATED_AT, CREATED_AT) DESC
                     """
                 )
@@ -409,6 +412,9 @@ class RemediationAPI:
                         "errorType": row[3],
                         "errorMessage": row[4],
                         "time": row[5].isoformat() if row[5] is not None else None,
+                        "rootCause": row[6] or None,
+                        "status": row[7] or "FAILED",
+                        "created": row[8].isoformat() if row[8] is not None else None,
                     }
                     for row in rows
                 ]

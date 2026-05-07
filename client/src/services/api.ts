@@ -383,6 +383,9 @@ export interface LogIncident {
   errorType: string | null;
   errorMessage: string | null;
   time: string | null;
+  rootCause?: string | null;
+  status?: string | null;
+  created?: string | null;
 }
 
 export async function fetchLogIncidents(): Promise<LogIncident[]> {
