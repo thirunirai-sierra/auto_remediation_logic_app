@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import requests
+import re
 import signal
 import sys
 import time
@@ -31,12 +33,12 @@ from typing import Any, Dict, List, Optional, Set
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import our modules
 from config import get_settings, Settings
-from cli import run_remediation
+from workflow_agent import run_remediation
 from multi_flow_runner import query_failed_runs_from_workspace
 
 # Import Orchestrator
@@ -357,6 +359,65 @@ class RemediationAPI:
     
     def _register_routes(self, app: FastAPI):
         """Register API routes."""
+        def _query_log_analytics(query: str, *, hours: int) -> Dict[str, Any]:
+            workspace_id = (self.settings.log_analytics_workspace_id or "").strip()
+            if not workspace_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="LOG_ANALYTICS_WORKSPACE_ID is not configured",
+                )
+            tenant_id = (self.settings.tenant_id or "").strip()
+            client_id = (self.settings.client_id or "").strip()
+            client_secret = (self.settings.client_secret or "").strip()
+            if not (tenant_id and client_id and client_secret):
+                raise HTTPException(
+                    status_code=400,
+                    detail="AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET are required",
+                )
+
+            token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+            query_url = f"https://api.loganalytics.io/v1/workspaces/{workspace_id}/query"
+            token_form = {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "scope": "https://api.loganalytics.io/.default",
+                "grant_type": "client_credentials",
+            }
+            try:
+                token_resp = requests.post(
+                    token_url,
+                    data=token_form,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=30,
+                )
+                token_resp.raise_for_status()
+                access_token = token_resp.json().get("access_token", "")
+                if not access_token:
+                    raise RuntimeError("Azure AD token response missing access_token")
+
+                logs_resp = requests.post(
+                    query_url,
+                    json={"query": query},
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=45,
+                )
+                if not logs_resp.ok:
+                    body_preview = (logs_resp.text or "")[:1500]
+                    raise RuntimeError(
+                        f"Log Analytics query failed: status={logs_resp.status_code} body={body_preview}"
+                    )
+                return logs_resp.json()
+            except HTTPException:
+                raise
+            except Exception as ex:
+                logger.error("Failed to query Log Analytics: %s", ex)
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to fetch logs from Azure Monitor: {ex}",
+                ) from ex
         
         @app.get("/")
         async def root():
@@ -395,6 +456,183 @@ class RemediationAPI:
                     "monitor_running": self.monitor._is_running if self.monitor else False,
                 }
             return {"message": "Monitor not initialized"}
+
+        @app.get("/incidents")
+        async def get_incidents(
+            hours: int = Query(24, ge=1, le=168),
+            top: int = Query(100, ge=1, le=100),
+        ):
+            """
+            Fetch failed Logic App incidents from Azure Log Analytics and return
+            a normalized payload for dashboard consumption.
+            """
+            query = f"""
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.LOGIC"
+| where TimeGenerated > ago({hours}h)
+| extend _resourceId = tostring(column_ifexists("_ResourceId", ""))
+| extend _status = tostring(coalesce(column_ifexists("status_s", ""), column_ifexists("Status_s", ""), column_ifexists("status", ""), column_ifexists("Status", "")))
+| extend _incident = tostring(coalesce(column_ifexists("correlation_actionTrackingId_s", ""), extract(@"/runs/([^/]+)", 1, _resourceId)))
+| extend _subscription = tostring(coalesce(column_ifexists("_SubscriptionId", ""), column_ifexists("SubscriptionId", "")))
+| extend _workflow = tostring(coalesce(column_ifexists("resource_workflowName_s", ""), extract(@"/workflows/([^/]+)", 1, _resourceId)))
+| extend _errorType = tostring(coalesce(column_ifexists("error_code_s", ""), column_ifexists("code_s", ""), column_ifexists("ErrorCode", "")))
+| extend _errorMessage = tostring(coalesce(column_ifexists("error_message_s", ""), column_ifexists("ErrorMessage", ""), column_ifexists("message", "")))
+| where _status =~ "Failed" or toupper(tostring(column_ifexists("Level", ""))) == "ERROR"
+| project
+    incidentId = _incident,
+    subscriptionId = _subscription,
+    integrationScenario = _workflow,
+    errorType = _errorType,
+    errorMessage = _errorMessage,
+    eventTime = TimeGenerated
+| top {top} by eventTime desc
+"""
+            result = _query_log_analytics(query, hours=hours)
+
+            table = (result.get("tables") or [{}])[0]
+            rows = table.get("rows") or []
+            incidents = [
+                {
+                    "incidentId": row[0] if len(row) > 0 else None,
+                    "subscriptionId": row[1] if len(row) > 1 else None,
+                    "integrationScenario": row[2] if len(row) > 2 else None,
+                    "errorType": row[3] if len(row) > 3 else None,
+                    "errorMessage": row[4] if len(row) > 4 else None,
+                    "time": row[5] if len(row) > 5 else None,
+                }
+                for row in rows
+            ]
+            return incidents
+
+        @app.get("/logs/overview")
+        async def get_logs_overview(
+            hours: int = Query(24, ge=1, le=168),
+            top: int = Query(1000, ge=1, le=5000),
+        ):
+            """
+            Aggregate Logic App workspace logs for dashboard KPIs and charts.
+            """
+            query = f"""
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.LOGIC"
+| where TimeGenerated > ago({hours}h)
+| project
+    eventTime = TimeGenerated,
+    resourceId = tostring(column_ifexists("_ResourceId", "")),
+    subscriptionId = tostring(column_ifexists("_SubscriptionId", "")),
+    integrationScenario = tostring(coalesce(column_ifexists("resource_workflowName_s", ""), extract(@"/workflows/([^/]+)", 1, tostring(column_ifexists("_ResourceId", ""))))),
+    status = tostring(coalesce(column_ifexists("status_s", ""), column_ifexists("Status_s", ""), column_ifexists("status", ""), column_ifexists("Status", ""))),
+    errorType = tostring(coalesce(column_ifexists("error_code_s", ""), column_ifexists("code_s", ""), column_ifexists("ErrorCode", ""))),
+    errorMessage = tostring(coalesce(column_ifexists("error_message_s", ""), column_ifexists("ErrorMessage", ""), column_ifexists("message", ""))),
+    level = tostring(column_ifexists("Level", "")),
+    operationName = tostring(column_ifexists("OperationName", ""))
+| order by eventTime desc
+| take {top}
+"""
+            result = _query_log_analytics(query, hours=hours)
+            table = (result.get("tables") or [{}])[0]
+            rows = table.get("rows") or []
+
+            logs: List[Dict[str, Any]] = []
+            flow_names: Set[str] = set()
+            error_flows: Set[str] = set()
+            fixed_flows: Set[str] = set()
+            status_counts: Dict[str, int] = {}
+            error_counts: Dict[str, int] = {}
+            timeline_counts: Dict[str, int] = {}
+            iflow_failures: Dict[str, int] = {}
+
+            for row in rows:
+                item = {
+                    "time": row[0] if len(row) > 0 else None,
+                    "resourceId": row[1] if len(row) > 1 else "",
+                    "subscriptionId": row[2] if len(row) > 2 else None,
+                    "integrationScenario": row[3] if len(row) > 3 else None,
+                    "status": row[4] if len(row) > 4 else "",
+                    "errorType": row[5] if len(row) > 5 else "",
+                    "errorMessage": row[6] if len(row) > 6 else "",
+                    "level": row[7] if len(row) > 7 else "",
+                    "operationName": row[8] if len(row) > 8 else "",
+                }
+                logs.append(item)
+
+                flow = str(item.get("integrationScenario") or "").strip()
+                if flow:
+                    flow_names.add(flow)
+
+                status = str(item.get("status") or "").strip()
+                status_key = status.upper() if status else "UNKNOWN"
+                status_counts[status_key] = status_counts.get(status_key, 0) + 1
+
+                resource_id = str(item.get("resourceId") or "")
+                level = str(item.get("level") or "").upper()
+                error_message = str(item.get("errorMessage") or "").strip()
+                error_type = str(item.get("errorType") or "").strip() or "UNKNOWN"
+                is_failed = (
+                    status.lower() == "failed"
+                    or level == "ERROR"
+                    or bool(error_message)
+                    or "/ACTIONS/FAIL_" in resource_id.upper()
+                )
+                is_fixed = (
+                    status.lower() in ("succeeded", "success")
+                    or "/ACTIONS/SUCCESS_" in resource_id.upper()
+                )
+                if flow and is_failed:
+                    error_flows.add(flow)
+                    iflow_failures[flow] = iflow_failures.get(flow, 0) + 1
+                    error_counts[error_type] = error_counts.get(error_type, 0) + 1
+                if flow and is_fixed:
+                    fixed_flows.add(flow)
+
+                if item.get("time"):
+                    bucket = str(item["time"])[:13]  # YYYY-MM-DDTHH
+                    timeline_counts[bucket] = timeline_counts.get(bucket, 0) + 1
+
+            def _extract_run_id(resource_id: str) -> Optional[str]:
+                m = re.search(r"/RUNS/([^/]+)", resource_id or "", re.IGNORECASE)
+                return m.group(1) if m else None
+
+            error_messages = [
+                {
+                    "integrationScenario": i.get("integrationScenario"),
+                    "errorType": i.get("errorType"),
+                    "errorMessage": i.get("errorMessage"),
+                    "time": i.get("time"),
+                    "resourceId": i.get("resourceId"),
+                    "status": i.get("status"),
+                    "runId": _extract_run_id(str(i.get("resourceId") or "")),
+                }
+                for i in logs
+                if str(i.get("errorMessage") or "").strip()
+            ][:100]
+
+            return {
+                "kpi": {
+                    "total_flows": len(flow_names),
+                    "error_flows": len(error_flows),
+                    "fixed_flows": len(fixed_flows),
+                    "total_logs": len(logs),
+                    "total_error_messages": len(error_messages),
+                },
+                "status_breakdown": [
+                    {"status": k, "count": v}
+                    for k, v in sorted(status_counts.items(), key=lambda x: x[1], reverse=True)
+                ],
+                "error_distribution": [
+                    {"error_type": k, "count": v}
+                    for k, v in sorted(error_counts.items(), key=lambda x: x[1], reverse=True)
+                ],
+                "top_iflows": [
+                    {"iflow_name": k, "failure_count": v}
+                    for k, v in sorted(iflow_failures.items(), key=lambda x: x[1], reverse=True)[:10]
+                ],
+                "timeline": [
+                    {"time": k, "count": v}
+                    for k, v in sorted(timeline_counts.items())
+                ],
+                "error_messages": error_messages,
+            }
         
         @app.post("/remediate")
         async def remediate_all(background_tasks: BackgroundTasks):
