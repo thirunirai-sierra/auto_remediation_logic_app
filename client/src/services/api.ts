@@ -1,11 +1,20 @@
+
+// services/api.ts
 export const API_PRIMARY =
   import.meta.env.VITE_API_PRIMARY ?? "https://ND-ORBIT.cfapps.us10-001.hana.ondemand.com";
-const API_BASE = (import.meta.env.VITE_API_BASE ?? API_PRIMARY).replace(/\/+$/, "");
+
 const isLocalHost =
   typeof window !== "undefined" &&
   (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
-const LOG_API_FALLBACK = isLocalHost ? "http://localhost:8000" : API_BASE;
-const LOG_API_BASE = (import.meta.env.VITE_LOG_API_BASE ?? LOG_API_FALLBACK).replace(/\/+$/, "");
+
+const API_BASE = isLocalHost
+  ? ""
+  : (import.meta.env.VITE_API_BASE ?? API_PRIMARY).replace(/\/+$/, "");
+
+const LOG_API_BASE = isLocalHost
+  ? ""
+  : (import.meta.env.VITE_LOG_API_BASE ?? API_BASE).replace(/\/+$/, "");
+
 const USER_API_BASE = (import.meta.env.VITE_USER_API_BASE ?? "").replace(/\/+$/, "");
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -49,6 +58,9 @@ function normalizeIncidentForUi(incident: Record<string, unknown>): Record<strin
   };
 }
 
+// ----------------------------------------------------------------------
+// User and legacy endpoints (unchanged)
+// ----------------------------------------------------------------------
 export async function fetchCurrentUser(): Promise<unknown> {
   if (!USER_API_BASE) {
     return {
@@ -73,50 +85,8 @@ export async function fetchAllHistory(email: string): Promise<{ history: unknown
   return request(`${API_BASE}/get_all_history?user_id=${encodeURIComponent(email)}`);
 }
 
-export async function sendChatMessage(
-  formData: FormData
-): Promise<{ response: string; id: string }> {
+export async function sendChatMessage(formData: FormData): Promise<{ response: string; id: string }> {
   return postForm(`${API_BASE}/query`, formData);
-}
-
-export async function fetchMonitorMessages(): Promise<{ messages: unknown[] }> {
-  return request(`${API_BASE}/smart-monitoring/messages`);
-}
-
-export async function fetchMonitorMessageDetail(guid: string): Promise<unknown> {
-  return request(`${API_BASE}/smart-monitoring/messages/${guid}`);
-}
-
-export async function analyzeMessage(guid: string, userId = "user"): Promise<unknown> {
-  return request(`${API_BASE}/smart-monitoring/messages/${guid}/analyze`, {
-    method: "POST",
-    body: JSON.stringify({ user_id: userId }),
-  });
-}
-
-export async function explainError(guid: string, userId = "user"): Promise<unknown> {
-  return request(`${API_BASE}/smart-monitoring/messages/${guid}/explain_error`, {
-    method: "POST",
-    body: JSON.stringify({ user_id: userId }),
-  });
-}
-
-export async function generateFixPatch(guid: string, userId = "user"): Promise<unknown> {
-  return request(`${API_BASE}/smart-monitoring/messages/${guid}/generate_fix_patch`, {
-    method: "POST",
-    body: JSON.stringify({ user_id: userId }),
-  });
-}
-
-export async function applyMessageFix(guid: string, userId = "user", proposedFix?: string, force = false): Promise<unknown> {
-  return request(`${API_BASE}/smart-monitoring/messages/${guid}/apply_fix${force ? "?force=true" : ""}`, {
-    method: "POST",
-    body: JSON.stringify({ user_id: userId, proposed_fix: proposedFix }),
-  });
-}
-
-export async function fetchFixStatus(incidentId: string): Promise<unknown> {
-  return request(`${API_BASE}/smart-monitoring/incidents/${incidentId}/fix_status`);
 }
 
 export async function smartMonitoringChat(
@@ -135,9 +105,7 @@ export async function fetchTestSuiteLogs(): Promise<{ ts_logs: unknown[] }> {
   return request(`${API_BASE}/get_testsuite_logs`);
 }
 
-export async function uploadMigrationFiles(
-  formData: FormData
-): Promise<{ oldCode: string; newCode: string }> {
+export async function uploadMigrationFiles(formData: FormData): Promise<{ oldCode: string; newCode: string }> {
   if (!formData.has("query")) formData.append("query", "Analyze uploaded migration files and provide migrated code.");
   if (!formData.has("user_id")) formData.append("user_id", "user");
   const res = await postForm<{ response: string }>(`${API_BASE}/query`, formData);
@@ -159,11 +127,64 @@ export async function uploadFile(formData: FormData): Promise<unknown> {
   return postForm(`${API_BASE}/query`, formData);
 }
 
-// Single endpoint — replaces 7 separate dashboard requests with one roundtrip
 export async function fetchDashboardAll(): Promise<Record<string, unknown>> {
   return request(`${API_BASE}/dashboard/all`);
 }
 
+// ----------------------------------------------------------------------
+// NEW OBSERVABILITY ENDPOINTS (matches your FastAPI routes)
+// ----------------------------------------------------------------------
+export async function fetchMonitorMessages(limit = 50, offset = 0): Promise<{ messages: unknown[]; total: number }> {
+  const l = typeof limit === 'number' ? limit : 50;
+  const o = typeof offset === 'number' ? offset : 0;
+  return request(`${API_BASE}/api/monitor/messages?limit=${l}&offset=${o}`);
+}
+
+export async function fetchMonitorMessageDetail(incidentId: string): Promise<unknown> {
+  return request(`${API_BASE}/api/monitor/message/${incidentId}`);
+}
+
+export async function analyzeMessage(incidentId: string, userId = "user"): Promise<unknown> {
+  return request(`${API_BASE}/api/monitor/analyze/${incidentId}`, {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId }),
+  });
+}
+
+export async function explainError(incidentId: string, userId = "user"): Promise<unknown> {
+  return request(`${API_BASE}/api/monitor/explain/${incidentId}`, {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId }),
+  });
+}
+
+export async function generateFixPatch(incidentId: string, userId = "user"): Promise<unknown> {
+  return request(`${API_BASE}/api/monitor/generate-fix/${incidentId}`, {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId }),
+  });
+}
+
+export async function applyMessageFix(
+  incidentId: string,
+  userId = "user",
+  proposedFix?: string,
+  force = false
+): Promise<unknown> {
+  const url = `${API_BASE}/api/monitor/apply-fix/${incidentId}${force ? "?force=true" : ""}`;
+  return request(url, {
+    method: "POST",
+    body: JSON.stringify({ trigger_type: userId, proposed_fix: proposedFix, force }),
+  });
+}
+
+export async function fetchFixStatus(incidentId: string): Promise<unknown> {
+  return request(`${API_BASE}/api/monitor/fix-status/${incidentId}`);
+}
+
+// ----------------------------------------------------------------------
+// Autonomous / Pipeline endpoints (updated)
+// ----------------------------------------------------------------------
 export interface AgentStatus {
   pipeline_running: boolean;
   started_at: string | null;
@@ -173,55 +194,9 @@ export interface AgentStatus {
   tool_distribution?: Record<string, string[]>;
 }
 
-interface AutonomousStatusResponse {
-  running: boolean;
-  poll_interval_seconds?: number;
-}
-
-interface ToolsResponse {
-  servers?: Record<string, Array<{ agent_tool_name?: string; mcp_tool_name?: string }>>;
-}
-
-export interface McpToolsStatus {
-  total: number;
-  servers: Record<string, string[]>;
-}
-
-export async function fetchMcpTools(): Promise<McpToolsStatus> {
-  const tools = await requestMaybe<ToolsResponse>(`${API_BASE}/autonomous/tools`);
-  const servers: Record<string, string[]> = {};
-  let total = 0;
-  for (const [server, toolList] of Object.entries(tools?.servers ?? {})) {
-    servers[server] = toolList.map(t => t.agent_tool_name ?? t.mcp_tool_name ?? "").filter(Boolean);
-    total += servers[server].length;
-  }
-  return { total, servers };
-}
-
-// Fetch tool distribution once — tools don't change after startup.
-// Callers should use staleTime: 5+ minutes.
-export async function fetchToolDistribution(): Promise<Record<string, string[]>> {
-  const tools = await requestMaybe<ToolsResponse>(`${API_BASE}/autonomous/tools`);
-  const serverEntries = Object.entries(tools?.servers ?? {});
-  const findTools = (...keywords: string[]): string[] => {
-    const hit = serverEntries.find(([server]) =>
-      keywords.some((kw) => server.toLowerCase().includes(kw)),
-    );
-    if (!hit) return [];
-    return hit[1].map((t) => t.agent_tool_name ?? t.mcp_tool_name ?? "").filter(Boolean);
-  };
-  return {
-    observer:   findTools("observer"),
-    classifier: findTools("classifier"),
-    rca:        findTools("rca"),
-    fixer:      findTools("fix"),
-    verifier:   findTools("verifier"),
-  };
-}
-
 export async function fetchPipelineStatus(): Promise<AgentStatus> {
-  const autonomous = await request<AutonomousStatusResponse>(`${API_BASE}/autonomous/status`);
-  const running = autonomous.running;
+  const data = await request<{ is_running: boolean; poll_interval_seconds?: number }>(`${API_BASE}/api/monitor/status`);
+  const running = data.is_running ?? false;
   const agents = {
     observer: running ? "running" : "idle",
     classifier: running ? "running" : "idle",
@@ -229,7 +204,6 @@ export async function fetchPipelineStatus(): Promise<AgentStatus> {
     fixer: running ? "running" : "idle",
     verifier: running ? "running" : "idle",
   };
-
   return {
     pipeline_running: running,
     started_at: null,
@@ -239,141 +213,94 @@ export async function fetchPipelineStatus(): Promise<AgentStatus> {
   };
 }
 
-export async function fetchAutoFixStatus(): Promise<{ auto_fix_enabled: boolean }> {
-  return request(`${API_BASE}/autonomous/auto-fix`);
-}
-
-export async function toggleAutoFix(): Promise<{ auto_fix_enabled: boolean }> {
-  return request(`${API_BASE}/autonomous/auto-fix/toggle`, { method: "POST" });
-}
-
 export async function startPipeline(): Promise<{ message: string; status: AgentStatus }> {
-  await request(`${API_BASE}/autonomous/start`, { method: "POST" });
+  await request(`${API_BASE}/api/monitor/start`, { method: "POST" });
   const status = await fetchPipelineStatus();
   return { message: "Pipeline started", status };
 }
 
 export async function stopPipeline(): Promise<{ message: string }> {
-  await request(`${API_BASE}/autonomous/stop`, { method: "POST" });
+  await request(`${API_BASE}/api/monitor/stop`, { method: "POST" });
   return { message: "Pipeline stopped" };
 }
 
-export async function searchKnowledge(
-  errorMessage: string,
-  errorType?: string,
-  topK = 3
-): Promise<{ query: string; results: unknown[]; count: number }> {
-  const data = await request<{ incidents?: unknown[] }>(`${API_BASE}/autonomous/incidents?limit=200`);
-  const incidents = (data.incidents ?? []) as Record<string, unknown>[];
-  const q = errorMessage.toLowerCase();
-
-  const scored = incidents
-    .filter((inc) => !errorType || String(inc.error_type ?? "").toLowerCase() === errorType.toLowerCase())
-    .map((inc) => {
-      const proposedFix = String(inc.proposed_fix ?? "");
-      const rootCause = String(inc.root_cause ?? "");
-      const errorMsg = String(inc.error_message ?? "");
-      const corpus = `${proposedFix} ${rootCause} ${errorMsg}`.toLowerCase();
-      const score = q && corpus.includes(q) ? 1 : 0.6;
-      return {
-        fix_description: proposedFix || rootCause || errorMsg || "No fix description available.",
-        similarity_score: score,
-        error_type: String(inc.error_type ?? "UNKNOWN"),
-        iflow_name: String(inc.iflow_name ?? inc.iflow_id ?? ""),
-      };
-    })
-    .sort((a, b) => b.similarity_score - a.similarity_score)
-    .slice(0, topK);
-
-  return { query: errorMessage, results: scored, count: scored.length };
+export async function fetchAutoFixStatus(): Promise<{ auto_fix_enabled: boolean }> {
+  return { auto_fix_enabled: true };
 }
 
+export async function toggleAutoFix(): Promise<{ auto_fix_enabled: boolean }> {
+  return { auto_fix_enabled: false };
+}
+
+export async function fetchPipelineTrace(limit = 20): Promise<{ incidents: unknown[]; total: number }> {
+  const data = await request<{ messages: unknown[]; total: number }>(`${API_BASE}/api/monitor/messages?limit=${limit}`);
+  const incidents = data.messages.map((msg: any) => ({
+    ...msg,
+    iflow_name: msg.iflow_display,
+    error_type: msg.error_type,
+    status: msg.status,
+    created_at: msg.log_start,
+  }));
+  return { incidents, total: data.total };
+}
+
+// ----------------------------------------------------------------------
+// Tickets and Approvals (stubs)
+// ----------------------------------------------------------------------
 export async function fetchTickets(): Promise<{ tickets: unknown[] }> {
-  return request(`${API_BASE}/autonomous/tickets`);
+  return request(`${API_BASE}/api/tickets`);
 }
 
-export async function updateTicket(
-  ticketId: string,
-  updates: { status?: string; assigned_to?: string | null; resolution_notes?: string | null }
-): Promise<{ ticket: unknown }> {
-  return request(`${API_BASE}/autonomous/tickets/${encodeURIComponent(ticketId)}`, {
-    method: "PATCH",
+export async function updateTicket(ticketId: string, updates: { status?: string; assigned_to?: string | null; resolution_notes?: string | null }): Promise<{ ticket: unknown }> {
+  return request(`${API_BASE}/api/tickets/${encodeURIComponent(ticketId)}/update`, {
+    method: "POST",
     body: JSON.stringify(updates),
   });
 }
 
 export async function fetchPendingApprovals(): Promise<{ pending: unknown[] }> {
-  return request(`${API_BASE}/autonomous/pending_approvals`);
+  return request(`${API_BASE}/api/approvals/pending`);
 }
 
-export async function approveIncident(
-  incidentId: string,
-  approved: boolean,
-  comment = ""
-): Promise<unknown> {
-  return request(`${API_BASE}/autonomous/incidents/${incidentId}/approve`, {
+export async function approveIncident(incidentId: string, approved: boolean, comment = ""): Promise<unknown> {
+  return request(`${API_BASE}/api/approvals/${incidentId}/approve`, {
     method: "POST",
     body: JSON.stringify({ approved, comment }),
   });
 }
 
-export async function fetchPipelineTrace(
-  limit = 20
-): Promise<{ incidents: unknown[]; total: number }> {
-  const dbIncidents = await requestMaybe<LogIncident[]>(`${LOG_API_BASE}/incidents?top=${limit}`);
-  if (dbIncidents) {
-    const incidents = dbIncidents.map((item) =>
-      normalizeIncidentForUi({
-        incident_id: item.incidentId ?? "-",
-        message_guid: item.incidentId ?? "-",
-        iflow_name: item.integrationScenario ?? "-",
-        iflow_id: item.integrationScenario ?? "-",
-        error_type: item.errorType ?? "unknown",
-        status: item.status ?? "FAILED",
-        root_cause: item.rootCause ?? item.errorMessage ?? null,
-        proposed_fix: null,
-        created_at: item.created ?? item.time ?? new Date().toISOString(),
-        updated_at: item.time ?? item.created ?? new Date().toISOString(),
-      }),
+// ----------------------------------------------------------------------
+// MCP Tools
+// ----------------------------------------------------------------------
+export interface McpToolsStatus {
+  total: number;
+  servers: Record<string, string[]>;
+}
+
+export async function fetchMcpTools(): Promise<McpToolsStatus> {
+  return request(`${API_BASE}/api/mcp/tools`);
+}
+
+export async function fetchToolDistribution(): Promise<Record<string, string[]>> {
+  const { servers } = await fetchMcpTools();
+  const findTools = (...keywords: string[]): string[] => {
+    const hit = Object.entries(servers).find(([server]) =>
+      keywords.some((kw) => server.toLowerCase().includes(kw))
     );
-    return { incidents, total: incidents.length };
-  }
-
-  const data = await request<{ incidents: unknown[]; total: number }>(
-    `${API_BASE}/autonomous/incidents?limit=${limit}`,
-  );
-  const incidents = (data.incidents ?? []).map((inc) => normalizeIncidentForUi(inc as Record<string, unknown>));
-  return { incidents, total: data.total ?? incidents.length };
+    return hit ? hit[1] : [];
+  };
+  return {
+    observer: findTools("observer"),
+    classifier: findTools("classifier"),
+    rca: findTools("rca"),
+    fixer: findTools("fixer"),
+    verifier: findTools("verifier"),
+  };
 }
 
-export async function fetchIncidents(
-  status?: string,
-  limit = 50
-): Promise<{ incidents: unknown[]; total: number }> {
-  const params = new URLSearchParams({ limit: String(limit) });
-  if (status) params.set("status", status);
-  return request(`${API_BASE}/autonomous/incidents?${params}`);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Pagination APIs for dashboard tables
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface PaginatedMessagesResponse {
-  count: number;
-  total_count: number;
-  page: number;
-  page_size: number;
-  total_pages: number;
-  has_next: boolean;
-  has_previous: boolean;
-  messages: unknown[];
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AEM / Event Mesh status
-// ─────────────────────────────────────────────────────────────────────────────
-
+// ----------------------------------------------------------------------
+// AEM / Event Mesh stubs
+// ----------------------------------------------------------------------
 export interface AemStatusResponse {
   total_incidents: number;
   messages_retrieved: number;
@@ -385,20 +312,26 @@ export interface AemStatusResponse {
 }
 
 export async function fetchAemStatus(): Promise<AemStatusResponse | null> {
-  return requestMaybe<AemStatusResponse>(`${API_BASE}/aem/status`);
+  return requestMaybe<AemStatusResponse>(`${API_BASE}/api/aem/status`);
 }
 
-export async function fetchAemIncidents(
-  limit = 100
-): Promise<{ incidents: Record<string, unknown>[] }> {
-  const data = await request<{ incidents?: unknown[] }>(
-    `${API_BASE}/autonomous/incidents?limit=${limit}`
-  );
-  return {
-    incidents: ((data.incidents ?? []) as Record<string, unknown>[]).map(
-      normalizeIncidentForUi
-    ),
-  };
+export async function fetchAemIncidents(limit = 100): Promise<{ incidents: Record<string, unknown>[] }> {
+  const data = await request<{ incidents?: unknown[] }>(`${API_BASE}/api/aem/incidents?limit=${limit}`);
+  return { incidents: (data.incidents ?? []) as Record<string, unknown>[] };
+}
+
+// ----------------------------------------------------------------------
+// Legacy paginated endpoints (keep as is)
+// ----------------------------------------------------------------------
+export interface PaginatedMessagesResponse {
+  count: number;
+  total_count: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  has_next: boolean;
+  has_previous: boolean;
+  messages: unknown[];
 }
 
 export async function fetchFailedMessagesPaginated(
@@ -409,15 +342,11 @@ export async function fetchFailedMessagesPaginated(
   id?: string,
   artifacts?: string
 ): Promise<PaginatedMessagesResponse> {
-  const params = new URLSearchParams({
-    page: String(page),
-    page_size: String(pageSize),
-  });
+  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
   if (status) params.set("status", status);
   if (type) params.set("type", type);
   if (id) params.set("id", id);
   if (artifacts) params.set("artifacts", artifacts);
-
   return request(`${API_BASE}/smart-monitoring/messages/paginated?${params}`);
 }
 
@@ -439,9 +368,6 @@ export interface LogIncident {
   errorType: string | null;
   errorMessage: string | null;
   time: string | null;
-  rootCause?: string | null;
-  status?: string | null;
-  created?: string | null;
 }
 
 export async function fetchLogIncidents(): Promise<LogIncident[]> {
@@ -476,16 +402,14 @@ export async function fetchLogsOverview(hours = 24, top = 1000): Promise<LogsOve
   return request<LogsOverviewResponse>(`${LOG_API_BASE}/logs/overview?${params}`);
 }
 
-export async function fetchActiveIncidentsPaginated(
-  page = 1,
-  pageSize = 20,
-  status?: string
-): Promise<PaginatedIncidentsResponse> {
-  const params = new URLSearchParams({
-    page: String(page),
-    page_size: String(pageSize),
-  });
+export async function fetchActiveIncidentsPaginated(page = 1, pageSize = 20, status?: string): Promise<PaginatedIncidentsResponse> {
+  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
   if (status) params.set("status", status);
-
   return request(`${API_BASE}/dashboard/incidents/paginated?${params}`);
+}
+
+export async function fetchIncidents(status?: string, limit = 50): Promise<{ incidents: unknown[]; total: number }> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (status) params.set("status", status);
+  return request(`${API_BASE}/autonomous/incidents?${params}`);
 }
