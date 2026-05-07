@@ -96,8 +96,7 @@ AzureDiagnostics
     error_code_s = _error_code,
     error_message_s = _error_message,
     _ResourceId = _rid
-| order by TimeGenerated desc
-| take {top_n}
+|summarize arg_min(TimeGenerated, *) by resource_runId_s
 """
 
 

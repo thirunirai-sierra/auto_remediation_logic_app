@@ -176,9 +176,11 @@
     "08584236499184022943933133876CU11": "2026-05-05T14:25:39.146599",
     "08584236500126292628243116589CU06": "2026-05-05T14:27:20.847894",
     "08584236499945232128506730681CU05": "2026-05-05T14:43:22.707852",
-    "08584236493775758571377954560CU29": "2026-05-05T15:14:35.084472",
-    "08584236330957059896571203390CU04": "2026-05-05T15:23:05.944606",
-    "08584236495811817500476447733CU20": "2026-05-05T15:25:40.994767"
+    "08584236493775758571377954560CU29": "2026-05-06T09:57:36.613684",
+    "08584236495811817500476447733CU20": "2026-05-06T09:58:07.295510",
+    "08584236322056128862689593174CU18": "2026-05-06T10:59:32.905413",
+    "08584236330957059896571203390CU04": "2026-05-06T11:00:05.066270",
+    "08584235596815960612696824507CU04": "2026-05-06T11:36:01.236233"
   },
   "workflow_states": {
     "test_workflow": {
@@ -203,15 +205,15 @@
     },
     "ERROR-FLOW": {
       "workflow_name": "ERROR-FLOW",
-      "last_fixed_at": "2026-05-05T15:25:40.994767",
-      "last_fixed_run_id": "08584236495811817500476447733CU20",
-      "error_type_fixed": "The Compose action evaluates a div() expression whose second argument resolves to Null at runtime (missing/empty/uninitialized value), and the template function div() requires a numeric denominator.",
+      "last_fixed_at": "2026-05-06T11:36:01.236233",
+      "last_fixed_run_id": "08584235596815960612696824507CU04",
+      "error_type_fixed": "The Compose action's div() expression evaluated a null denominator because the referenced output from a prior step was missing/empty at runtime, so the function couldn't compute.",
       "workflow_hash": "",
-      "fix_count": 158,
+      "fix_count": 165,
       "last_successful_run_at": null,
       "is_healthy": false
     }
   },
   "workflow_hashes": {},
-  "last_updated": "2026-05-05T15:25:40.994767"
+  "last_updated": "2026-05-06T11:36:01.237309"
 }

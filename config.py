@@ -36,7 +36,7 @@ class Settings:
     auth_header_name: str
     auth_header_value: str
     http_timeout_iso: str
-    
+    hana_observability_table: str
     # Azure OpenAI (optional)
     azure_openai_endpoint: Optional[str]
     azure_openai_api_key: Optional[str]
@@ -153,6 +153,7 @@ def get_settings() -> Settings:
         hana_password=os.getenv("HANA_PASSWORD", ""),
         hana_schema=os.getenv("HANA_SCHEMA", ""),
         hana_table=os.getenv("HANA_TABLE", "LOGIC_APPS_KNOWLEDGE"),
+        hana_observability_table=os.getenv("HANA_OBSERVABILITY_TABLE", "LOGIC_APPS_OBSERVABILITY"),
         
         # Embedding Model
         embedding_deployment_id=os.getenv("EMBEDDING_DEPLOYMENT_ID", ""),

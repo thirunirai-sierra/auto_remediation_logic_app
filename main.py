@@ -530,7 +530,7 @@ def run_server(settings: Settings) -> None:
     api = RemediationAPI(settings, monitor)
     app = api.create_app()
     
-    logger.info("Starting API server on http://0.0.0.0:8000")
+    logger.info("Starting API server on http://127.0.0.1:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
 
 
@@ -571,7 +571,7 @@ def run_full(settings: Settings) -> None:
     logger.info("=" * 60)
     logger.info("🚀 Logic Apps Auto-Remediation System")
     logger.info("   Monitor running in background")
-    logger.info("   API server: http://0.0.0.0:8000")
+    logger.info("   API server: http://127.0.0.1:8000")
     logger.info("=" * 60)
     
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
