@@ -1,28 +1,150 @@
 {
   "remediated_runs": {
-    "08584235508488204142720171001CU28": "2026-05-06T15:21:13.348608",
-    "08584235596815960612696824507CU04": "2026-05-06T15:27:03.461062",
-    "08584236322056128862689593174CU18": "2026-05-06T15:31:11.377503",
-    "08584235508324806066851744584CU09": "2026-05-06T15:53:38.360409",
-    "Logic_Apps_test:08584235423489140498349845457CU21": "2026-05-06T16:26:02.313958",
-    "08584234795257735661358079679CU02": "2026-05-07T10:10:16.785335",
-    "08584234780094879687244578165CU01": "2026-05-07T10:23:09.225841",
-    "08584234780748705055380067605CU00": "2026-05-07T10:24:06.307638",
-    "08584235385333219480965349639CU20": "2026-05-07T10:27:22.244931",
-    "08584235386538985829249502586CU01": "2026-05-07T10:27:54.832448"
+    "08584235508488204142720171001CU28": {
+      "run_id": "08584235508488204142720171001CU28",
+      "workflow_name": "",
+      "attempted_at": "2026-05-06T15:21:13.348608",
+      "error_type": "unknown",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": null,
+      "auto_fix_attempted": true,
+      "auto_fix_success": false
+    },
+    "08584235596815960612696824507CU04": {
+      "run_id": "08584235596815960612696824507CU04",
+      "workflow_name": "",
+      "attempted_at": "2026-05-06T15:27:03.461062",
+      "error_type": "unknown",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": null,
+      "auto_fix_attempted": true,
+      "auto_fix_success": false
+    },
+    "08584236322056128862689593174CU18": {
+      "run_id": "08584236322056128862689593174CU18",
+      "workflow_name": "",
+      "attempted_at": "2026-05-06T15:31:11.377503",
+      "error_type": "unknown",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": null,
+      "auto_fix_attempted": true,
+      "auto_fix_success": false
+    },
+    "08584235508324806066851744584CU09": {
+      "run_id": "08584235508324806066851744584CU09",
+      "workflow_name": "",
+      "attempted_at": "2026-05-06T15:53:38.360409",
+      "error_type": "unknown",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": null,
+      "auto_fix_attempted": true,
+      "auto_fix_success": false
+    },
+    "Logic_Apps_test:08584235423489140498349845457CU21": {
+      "run_id": "Logic_Apps_test:08584235423489140498349845457CU21",
+      "workflow_name": "",
+      "attempted_at": "2026-05-06T16:26:02.313958",
+      "error_type": "unknown",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": null,
+      "auto_fix_attempted": true,
+      "auto_fix_success": false
+    },
+    "08584234795257735661358079679CU02": {
+      "run_id": "08584234795257735661358079679CU02",
+      "workflow_name": "",
+      "attempted_at": "2026-05-07T10:10:16.785335",
+      "error_type": "unknown",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": null,
+      "auto_fix_attempted": true,
+      "auto_fix_success": false
+    },
+    "08584234780094879687244578165CU01": {
+      "run_id": "08584234780094879687244578165CU01",
+      "workflow_name": "",
+      "attempted_at": "2026-05-07T10:23:09.225841",
+      "error_type": "unknown",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": null,
+      "auto_fix_attempted": true,
+      "auto_fix_success": false
+    },
+    "08584234780748705055380067605CU00": {
+      "run_id": "08584234780748705055380067605CU00",
+      "workflow_name": "",
+      "attempted_at": "2026-05-07T10:24:06.307638",
+      "error_type": "unknown",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": null,
+      "auto_fix_attempted": true,
+      "auto_fix_success": false
+    },
+    "08584235385333219480965349639CU20": {
+      "run_id": "08584235385333219480965349639CU20",
+      "workflow_name": "",
+      "attempted_at": "2026-05-07T10:27:22.244931",
+      "error_type": "unknown",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": null,
+      "auto_fix_attempted": true,
+      "auto_fix_success": false
+    },
+    "08584235386538985829249502586CU01": {
+      "run_id": "08584235386538985829249502586CU01",
+      "workflow_name": "",
+      "attempted_at": "2026-05-07T10:27:54.832448",
+      "error_type": "unknown",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": null,
+      "auto_fix_attempted": true,
+      "auto_fix_success": false
+    },
+    "08584234550378882107396986370CU04": {
+      "run_id": "08584234550378882107396986370CU04",
+      "workflow_name": "ERROR-FLOW",
+      "attempted_at": "2026-05-07T17:35:48.921713",
+      "error_type": "The Compose action's div() expression evaluated a null/non-numeric denominator because the referenced dynamic output/variable wasn't produced or was empty, so the template engine rejected the expression (expression references must exist and be numeric).",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-07T17:35:48.921713",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false
+    }
   },
   "workflow_states": {
     "ERROR-FLOW": {
       "workflow_name": "ERROR-FLOW",
-      "last_fixed_at": "2026-05-07T10:27:54.832448",
-      "last_fixed_run_id": "08584235386538985829249502586CU01",
-      "error_type_fixed": "The Compose action evaluates a div() expression where the second argument (denominator) resolved to null at runtime. The div() template function requires a numeric (non-null) second parameter, so the engine rejected the expression.",
+      "last_fixed_at": "2026-05-07T17:35:48.921713",
+      "last_fixed_run_id": "08584234550378882107396986370CU04",
+      "error_type_fixed": "The Compose action's div() expression evaluated a null/non-numeric denominator because the referenced dynamic output/variable wasn't produced or was empty, so the template engine rejected the expression (expression references must exist and be numeric).",
       "workflow_hash": "",
-      "fix_count": 5,
+      "fix_count": 6,
       "last_successful_run_at": null,
       "is_healthy": false
     }
   },
   "workflow_hashes": {},
-  "last_updated": "2026-05-07T10:27:54.832448"
+  "last_updated": "2026-05-07T17:35:48.921713"
 }

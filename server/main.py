@@ -31,12 +31,13 @@ from pathlib import Path
 from threading import Event
 from typing import Any, Dict, List, Optional, Set
 from contextlib import asynccontextmanager
-
+# Add at the top with other imports
+from observability_routes import router as observability_router
 import uvicorn
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from hdbcli import dbapi
-
+from api_ingest import router as ingestion_router 
 # Import our modules
 from config import get_settings, Settings
 from workflow_agent import run_remediation
@@ -355,6 +356,8 @@ class RemediationAPI:
         
         # Register routes
         self._register_routes(app)
+        app.include_router(observability_router)
+        app.include_router(ingestion_router) 
         
         return app
     
@@ -762,7 +765,7 @@ def run_server(settings: Settings) -> None:
     app = api.create_app()
     
     logger.info("Starting API server on http://127.0.0.1:8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
 
 
 def run_full(settings: Settings) -> None:
@@ -805,7 +808,7 @@ def run_full(settings: Settings) -> None:
     logger.info("   API server: http://127.0.0.1:8000")
     logger.info("=" * 60)
     
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
 
 
 def main():

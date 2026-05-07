@@ -24,7 +24,6 @@ class HANAObservabilityClient:
         self.password = password
         self.schema = schema
         self.table = table
-        # Fully qualified, quoted table name – this never changes
         self.full_table = f'"{self.schema}"."{self.table}"'
         self.conn = None
         self._connect()
@@ -62,18 +61,64 @@ class HANAObservabilityClient:
             self.conn = None
             return self._connect()
 
+    def migrate_table(self) -> bool:
+        """Add new columns if they don't exist (ignores 'already exists' errors)."""
+        new_columns = [
+            ("AI_DIAGNOSIS", "NCLOB"),
+            ("AI_PROPOSED_FIX", "NCLOB"),
+            ("AI_CONFIDENCE", "DOUBLE"),
+            ("AI_FIX_PATCH", "NCLOB"),
+            ("FIELD_CHANGES", "NCLOB"),
+            ("HISTORY_ENTRIES", "NCLOB"),
+            ("PROPERTIES_JSON", "NCLOB"),
+            ("ARTIFACT_JSON", "NCLOB"),
+            ("ERROR_DETAILS_JSON", "NCLOB"),
+        ]
+        if not self._ensure_connected():
+            return False
+        cursor = self.conn.cursor()
+        try:
+            for col_name, col_type in new_columns:
+                try:
+                    cursor.execute(f"ALTER TABLE {self.full_table} ADD ({col_name} {col_type})")
+                    logger.info(f"Added column {col_name} to {self.full_table}")
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if "already exists" in error_msg or "duplicate column" in error_msg:
+                        logger.debug(f"Column {col_name} already exists, skipping")
+                    else:
+                        logger.warning(f"Could not add column {col_name}: {e}")
+            self.conn.commit()
+            logger.info("Table migration completed")
+            return True
+        except Exception as e:
+            logger.error(f"Migration failed: {e}")
+            return False
+        finally:
+            cursor.close()
+
     def create_table(self) -> bool:
         if not self._ensure_connected():
             return False
         cursor = self.conn.cursor()
         try:
-            # Check existence
-            cursor.execute(f"SELECT 1 FROM SYS.TABLES WHERE SCHEMA_NAME = '{self.schema}' AND TABLE_NAME = '{self.table}'")
-            if cursor.fetchone():
-                logger.info(f"Table {self.full_table} already exists")
-                cursor.close()
-                return True
-            # Create table
+            # Check if table exists by trying to select 1 row
+            cursor.execute(f"SELECT 1 FROM {self.full_table} LIMIT 1")
+            exists = True
+        except:
+            exists = False
+        finally:
+            cursor.close()
+
+        if exists:
+            logger.info(f"Table {self.full_table} already exists")
+            # Run migration to add any missing columns
+            self.migrate_table()
+            return True
+
+        # Table does not exist, create it
+        cursor = self.conn.cursor()
+        try:
             create_sql = f"""
                 CREATE COLUMN TABLE {self.full_table} (
                     INCIDENT_ID          NVARCHAR(64) PRIMARY KEY,
@@ -89,7 +134,16 @@ class HANAObservabilityClient:
                     UPDATED_AT           TIMESTAMP,
                     AUTO_FIX_ATTEMPTED   BOOLEAN,
                     AUTO_FIX_SUCCESS     BOOLEAN,
-                    RETRY_COUNT          SMALLINT
+                    RETRY_COUNT          SMALLINT,
+                    AI_DIAGNOSIS         NCLOB,
+                    AI_PROPOSED_FIX      NCLOB,
+                    AI_CONFIDENCE        DOUBLE,
+                    AI_FIX_PATCH         NCLOB,
+                    FIELD_CHANGES        NCLOB,
+                    HISTORY_ENTRIES      NCLOB,
+                    PROPERTIES_JSON      NCLOB,
+                    ARTIFACT_JSON        NCLOB,
+                    ERROR_DETAILS_JSON   NCLOB
                 )
             """
             cursor.execute(create_sql)
@@ -118,8 +172,11 @@ class HANAObservabilityClient:
                         ERROR_CODE, ERROR_MESSAGE, ERROR_CATEGORY,
                         STATUS, RCA_ROOT_CAUSE, FIX_STRATEGY,
                         CREATED_AT, UPDATED_AT,
-                        AUTO_FIX_ATTEMPTED, AUTO_FIX_SUCCESS, RETRY_COUNT
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        AUTO_FIX_ATTEMPTED, AUTO_FIX_SUCCESS, RETRY_COUNT,
+                        AI_DIAGNOSIS, AI_PROPOSED_FIX, AI_CONFIDENCE,
+                        AI_FIX_PATCH, FIELD_CHANGES, HISTORY_ENTRIES,
+                        PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
                 cursor.execute(sql, (
                     rec.get("incident_id"),
@@ -131,15 +188,22 @@ class HANAObservabilityClient:
                     rec.get("status", "Ticket Created"),
                     (rec.get("rca_root_cause") or "")[:4000] if rec.get("rca_root_cause") else None,
                     (rec.get("fix_strategy") or "")[:256] if rec.get("fix_strategy") else None,
-                    now,
-                    now,
+                    now, now,
                     rec.get("auto_fix_attempted", False),
                     rec.get("auto_fix_success", False),
-                    rec.get("retry_count", 0)
+                    rec.get("retry_count", 0),
+                    rec.get("ai_diagnosis"),
+                    rec.get("ai_proposed_fix"),
+                    rec.get("ai_confidence"),
+                    rec.get("ai_fix_patch"),
+                    rec.get("field_changes"),
+                    rec.get("history_entries"),
+                    rec.get("properties_json"),
+                    rec.get("artifact_json"),
+                    rec.get("error_details_json")
                 ))
                 inserted += 1
             except dbapi.IntegrityError:
-                # Primary key violation – update
                 update_sql = f"""
                     UPDATE {self.full_table}
                     SET SUBSCRIPTION_ID = ?,
@@ -153,7 +217,16 @@ class HANAObservabilityClient:
                         UPDATED_AT = ?,
                         AUTO_FIX_ATTEMPTED = ?,
                         AUTO_FIX_SUCCESS = ?,
-                        RETRY_COUNT = ?
+                        RETRY_COUNT = ?,
+                        AI_DIAGNOSIS = COALESCE(AI_DIAGNOSIS, ?),
+                        AI_PROPOSED_FIX = COALESCE(AI_PROPOSED_FIX, ?),
+                        AI_CONFIDENCE = COALESCE(AI_CONFIDENCE, ?),
+                        AI_FIX_PATCH = COALESCE(AI_FIX_PATCH, ?),
+                        FIELD_CHANGES = COALESCE(FIELD_CHANGES, ?),
+                        HISTORY_ENTRIES = COALESCE(HISTORY_ENTRIES, ?),
+                        PROPERTIES_JSON = COALESCE(PROPERTIES_JSON, ?),
+                        ARTIFACT_JSON = COALESCE(ARTIFACT_JSON, ?),
+                        ERROR_DETAILS_JSON = COALESCE(ERROR_DETAILS_JSON, ?)
                     WHERE INCIDENT_ID = ?
                 """
                 cursor.execute(update_sql, (
@@ -169,6 +242,15 @@ class HANAObservabilityClient:
                     rec.get("auto_fix_attempted", False),
                     rec.get("auto_fix_success", False),
                     rec.get("retry_count", 0),
+                    rec.get("ai_diagnosis"),
+                    rec.get("ai_proposed_fix"),
+                    rec.get("ai_confidence"),
+                    rec.get("ai_fix_patch"),
+                    rec.get("field_changes"),
+                    rec.get("history_entries"),
+                    rec.get("properties_json"),
+                    rec.get("artifact_json"),
+                    rec.get("error_details_json"),
                     rec.get("incident_id")
                 ))
                 inserted += 1
@@ -256,19 +338,47 @@ def get_hana_client(settings):
     if not all([host, user, pwd, schema]):
         logger.warning("HANA credentials missing")
         return None
-    # Use observability‑specific setting, fallback to env var or default
     table = getattr(settings, 'hana_observability_table', None) or os.getenv('HANA_OBSERVABILITY_TABLE', 'LOGIC_APPS_OBSERVABILITY')
-    return HANAObservabilityClient(host, port, user, pwd, schema, table)
-    """Factory function to create HANA client from settings object."""
+    client = HANAObservabilityClient(host, port, user, pwd, schema, table)
+    # Ensure table exists and is migrated
+    client.create_table()
+    return client
+
+# Global singleton instance
+_global_client = None
+
+def get_global_client():
+    """Singleton: create and return one HANA client that lives for the lifetime of the app."""
+    global _global_client
+    if _global_client is not None:
+        # Ensure connection is still alive; if not, reconnect
+        if not _global_client._ensure_connected():
+            _global_client._connect()
+        return _global_client
+
     if not HDBCLI_AVAILABLE:
+        logger.error("hdbcli not available")
         return None
+
+    from config import get_settings
+    settings = get_settings()
+
     host = getattr(settings, 'hana_host', None) or os.getenv('HANA_HOST')
     port = getattr(settings, 'hana_port', 443) or int(os.getenv('HANA_PORT', 443))
     user = getattr(settings, 'hana_user', None) or os.getenv('HANA_USER')
     pwd = getattr(settings, 'hana_password', None) or os.getenv('HANA_PASSWORD')
     schema = getattr(settings, 'hana_schema', None) or os.getenv('HANA_SCHEMA')
     if not all([host, user, pwd, schema]):
-        logger.warning("HANA credentials missing")
+        logger.error("HANA credentials missing – cannot create client")
         return None
-    table = getattr(settings, 'hana_table', None) or os.getenv('HANA_TABLE', 'LOGIC_APPS_OBSERVABILITY')
-    return HANAObservabilityClient(host, port, user, pwd, schema, table)
+
+    table = getattr(settings, 'hana_observability_table', None) or os.getenv('HANA_OBSERVABILITY_TABLE', 'LOGIC_APPS_OBSERVABILITY')
+    _global_client = HANAObservabilityClient(host, port, user, pwd, schema, table)
+    _global_client.create_table()         # ensures table exists and runs migration once
+    logger.info("Singleton HANA client created and table ensured")
+    return _global_client
+
+# Legacy function – kept for backward compatibility, but now returns the global client
+def get_hana_client(settings):
+    logger.warning("Deprecated: get_hana_client() – use get_global_client() instead")
+    return get_global_client()
