@@ -9,10 +9,10 @@ Features:
 5. Persistent state tracking to avoid duplicate fixes
 
 Usage:
-    python main.py                    # Start monitoring with default settings
-    python main.py --once             # Run once and exit
-    python main.py --daemon           # Run as background daemon
-    python main.py --server-only      # Start only API server (no monitoring)
+    python main.py                    # Continuous monitor (default)
+    python main.py --once             # Run one poll cycle then exit
+    python main.py --daemon           # Same as default (monitor only)
+    python main.py --server-only      # API server only (no monitoring)
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Import our modules
 from config import get_settings, Settings
-from cli import run_remediation
+from workflow_agent import run_remediation
 from multi_flow_runner import query_failed_runs_from_workspace
 
 # Import Orchestrator
@@ -179,7 +179,7 @@ class ContinuousMonitor:
         self._stop_event.clear()
         
         logger.info("=" * 60)
-        logger.info("🔍 Starting Continuous Monitor")
+        logger.info(" Starting Continuous Monitor")
         logger.info(f"   Poll interval: {self.poll_interval}s")
         logger.info(f"   Lookback hours: {self.lookback_hours}")
         logger.info(f"   Using orchestrator: {self.use_orchestrator}")
@@ -216,7 +216,7 @@ class ContinuousMonitor:
     def _poll_and_remediate(self) -> None:
         """Single poll cycle: query failed runs and remediate."""
         logger.info("-" * 40)
-        logger.info(f"📊 Polling at {datetime.now().isoformat()}")
+        logger.info(f" Polling at {datetime.now().isoformat()}")
         
         # Check if Log Analytics is configured
         if not self.settings.log_analytics_workspace_id:
@@ -239,20 +239,38 @@ class ContinuousMonitor:
             logger.info("No failed runs found")
             return
         
-        logger.info(f"Found {len(failed_runs)} failed runs in logs")
+        # De-duplicate runs before processing
+        seen_runs: Set[str] = set()
+        unique_runs = []
+        for run in failed_runs:
+            wf_name = run.get("resource_workflowName_s") or run.get("workflowName")
+            run_id = run.get("resource_runId_s") or run.get("runId")
+            if not wf_name or not run_id:
+                continue
+            key = f"{wf_name}/{run_id}"
+            if key not in seen_runs:
+                seen_runs.add(key)
+                unique_runs.append(run)
+        
+        logger.info(f"Found {len(failed_runs)} failed runs in logs ({len(unique_runs)} unique)")
         
         # Process each failed run
         remediated_count = 0
         skipped_count = 0
         failed_count = 0
+        processed_this_cycle: Set[str] = set()  # Track what we've processed this cycle
         
-        for run in failed_runs:
+        for run in unique_runs:
             # Extract run details
             wf_name = run.get("resource_workflowName_s") or run.get("workflowName")
             run_id = run.get("resource_runId_s") or run.get("runId")
             
-            if not wf_name or not run_id:
+            key = f"{wf_name}/{run_id}"
+            
+            # Skip if already processed this cycle
+            if key in processed_this_cycle:
                 continue
+            processed_this_cycle.add(key)
             
             # Check if already remediated
             if self.tracker.is_remediated(wf_name, run_id):
@@ -260,15 +278,20 @@ class ContinuousMonitor:
                 skipped_count += 1
                 continue
             
-            logger.info(f"🛠️ Remediating {wf_name}/{run_id}")
+            logger.info(f" Remediating {wf_name}/{run_id}")
+            
+            # Mark as processing BEFORE attempting fix (prevents re-processing on failure)
+            self.tracker.mark_remediated(wf_name, run_id)
             
             # Perform remediation
             result = self._remediate_run(wf_name, run_id)
             
             if result and result.get("status") in ("remediated", "success", "no_error"):
-                self.tracker.mark_remediated(wf_name, run_id)
                 remediated_count += 1
                 logger.info(f"✅ Remediated: {wf_name}/{run_id}")
+            elif result and result.get("status") == "skipped":
+                skipped_count += 1
+                logger.info(f"⏭️ Skipped (already healthy): {wf_name}/{run_id}")
             else:
                 failed_count += 1
                 logger.warning(f"❌ Failed to remediate: {wf_name}/{run_id} - {result.get('status') if result else 'unknown'}")
@@ -586,10 +609,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python main.py                          # Run full system (monitor + API)
-    python main.py --once                   # Run once and exit
-    python main.py --daemon                 # Run as daemon (monitor only)
-    python main.py --server-only            # Run API server only
+    python main.py                          # Continuous monitor (default)
+    python main.py --once                   # One poll cycle then exit
+    python main.py --daemon                 # Same as default (monitor only)
+    python main.py --server-only            # API server only
     python main.py --legacy <workflow> <run_id>  # Legacy single remediation
         """
     )
@@ -651,8 +674,8 @@ Examples:
         run_server(settings)
         return 0
     else:
-        # Full mode: monitor + API server
-        run_full(settings)
+        # Default: continuous monitor (same as --daemon)
+        run_daemon(settings)
         return 0
 
 

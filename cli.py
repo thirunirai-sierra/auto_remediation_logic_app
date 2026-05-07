@@ -75,7 +75,7 @@ class ContinuousMonitor:
         print("🔍 Starting Continuous Monitor (LLM-based)")
         print(f"   Poll interval: {self.poll_interval}s")
         print(f"   Lookback hours: {self.lookback_hours}")
-        print(f"   Using LLM Orchestrator: {'✅ YES' if self.use_orchestrator else '❌ NO'}")
+        print(f"   Using LLM Orchestrator: {'YES' if self.use_orchestrator else ' NO'}")
         print("=" * 70)
         print("Press Ctrl+C to stop\n")
         
@@ -91,7 +91,7 @@ class ContinuousMonitor:
                 try:
                     self._poll_and_remediate()
                 except Exception as e:
-                    print(f"❌ Polling error: {e}")
+                    print(f" Polling error: {e}")
                 
                 if self._running:
                     for i in range(self.poll_interval):
@@ -99,10 +99,10 @@ class ContinuousMonitor:
                             break
                         time.sleep(1)
         finally:
-            print("\n🛑 Monitor stopped")
+            print("\n Monitor stopped")
     
     def _poll_and_remediate(self) -> None:
-        print(f"\n📊 Polling at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"\n Polling at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("-" * 50)
         
         try:
@@ -113,7 +113,7 @@ class ContinuousMonitor:
                 settings=self.settings,
             )
         except Exception as e:
-            print(f"❌ Failed to query Log Analytics: {e}")
+            print(f" Failed to query Log Analytics: {e}")
             return
         
         results = failed_runs.get("results", [])
@@ -121,7 +121,7 @@ class ContinuousMonitor:
             print("✓ No failed runs found")
             return
         
-        print(f"📋 Found {len(results)} failed runs")
+        print(f" Found {len(results)} failed runs")
         
         remediated_count = 0
         skipped_count = 0
@@ -146,19 +146,19 @@ class ContinuousMonitor:
                 remediated_count += 1
                 error_type = result.get("root_cause", "unknown")
                 self.tracker.mark_run_remediated(run_id, wf_name, error_type)
-                print(f"✅ SUCCESS: {wf_name}/{run_id}")
+                print(f"SUCCESS: {wf_name}/{run_id}")
                 print(f"   Root cause: {result.get('root_cause')}")
                 print(f"   Fix: {result.get('fix_strategy', {}).get('strategy_description', 'N/A')[:80]}")
             else:
                 failed_count += 1
                 error = result.get("error", "Unknown") if result else "Unknown"
-                print(f"❌ FAILED: {wf_name}/{run_id} - {error[:100]}")
+                print(f" FAILED: {wf_name}/{run_id} - {error[:100]}")
             
             time.sleep(2)
         
-        print(f"\n📊 Poll complete: remediated={remediated_count}, skipped={skipped_count}, failed={failed_count}")
+        print(f"\n Poll complete: remediated={remediated_count}, skipped={skipped_count}, failed={failed_count}")
         stats = self.tracker.get_stats()
-        print(f"📈 Total fixes: {stats['total_remediated_runs']}")
+        print(f" Total fixes: {stats['total_remediated_runs']}")
     
     def _remediate_run(self, workflow_name: str, run_id: str) -> Optional[Dict[str, Any]]:
         try:
@@ -184,7 +184,7 @@ class ContinuousMonitor:
             else:
                 return {"status": "error", "error": "No remediation engine available"}
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(f" Error: {e}")
             return {"status": "error", "error": str(e)}
 
 
@@ -192,7 +192,7 @@ def show_tracker_stats():
     tracker = get_tracker()
     stats = tracker.get_stats()
     print("\n" + "=" * 50)
-    print("📊 REMEDIATION TRACKER STATISTICS")
+    print(" REMEDIATION TRACKER STATISTICS")
     print("=" * 50)
     print(f"Total remediated runs:     {stats['total_remediated_runs']}")
     print(f"Tracked workflows:         {stats['tracked_workflows']}")
@@ -201,14 +201,14 @@ def show_tracker_stats():
 
 
 def reset_tracker():
-    confirm = input("⚠️ Reset all tracking data? (y/N): ")
+    confirm = input(" Reset all tracking data? (y/N): ")
     if confirm.lower() == 'y':
         import os
         if os.path.exists("remediation_state.json"):
             os.remove("remediation_state.json")
-        print("✅ Tracker reset!")
+        print("Tracker reset!")
     else:
-        print("❌ Cancelled")
+        print(" Cancelled")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -261,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
     # Monitor mode
     if args.monitor:
         if not workspace_id:
-            print("❌ Error: --workspace-id required")
+            print(" Error: --workspace-id required")
             return 1
         
         monitor = ContinuousMonitor(
@@ -302,12 +302,12 @@ def main(argv: list[str] | None = None) -> int:
                 backup_dir=args.backup_dir,
             )
         else:
-            print("❌ LLM Orchestrator not available")
+            print(" LLM Orchestrator not available")
             return 1
         
         if result.get("status") == "remediated":
             tracker.mark_run_remediated(args.run_id, args.workflow, result.get("root_cause", "unknown"))
-            print("✅ REMEDIATED")
+            print("REMEDIATED")
         
         print(json.dumps(result, indent=2))
         return 0

@@ -15,17 +15,35 @@ from api.services.workflow_service import (
     list_run_actions,
     find_manual_or_recurrence_trigger,
     post_trigger_run,
+    get_latest_run_status,
 )
 from auth import get_arm_token
 from config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
+_RUNTIME_SNAPSHOT_MAX_CHARS = 16000
+
+
+def _failed_action_runtime_snapshot(failed_action: Dict[str, Any]) -> str:
+    """Serialize failed-step inputs/outputs so Fixer/LLM see resolved paths/payloads."""
+    props = failed_action.get("properties") or {}
+    snap = {"inputs": props.get("inputs"), "outputs": props.get("outputs")}
+    try:
+        txt = json.dumps(snap, default=str)
+        if len(txt) > _RUNTIME_SNAPSHOT_MAX_CHARS:
+            return txt[: _RUNTIME_SNAPSHOT_MAX_CHARS - 24] + "\n...<truncated>"
+        return txt
+    except Exception:
+        return ""
+
+
 # Import the RCA Agent (generates RCAResult via LLM)
 try:
-    from agent.rca_agent.engine import generate_rca
+    from agent.rca_agent.engine import generate_rca, pick_primary_failed_action
 except ImportError:
     generate_rca = None
+    pick_primary_failed_action = None
 
 # Import Fixer Agent (applies fixes via LLM)
 try:
@@ -62,13 +80,31 @@ def run_remediation(
     logger.info("=" * 70)
     
     try:
-        # === OBSERVER: Get run details ===
-        logger.info("[OBSERVER] Fetching failed run...")
+        # === GET TOKEN ===
         token = get_arm_token(
             settings.tenant_id,
             settings.client_id,
             settings.client_secret,
         )
+        
+        # === CHECK: Is workflow already healthy? ===
+        logger.info("[CHECK] Checking workflow's latest run status...")
+        latest_status = get_latest_run_status(
+            token, subscription_id, resource_group, workflow_name
+        )
+        logger.info(f"[CHECK] Workflow '{workflow_name}' latest status: {latest_status}")
+        
+        if latest_status.lower() == "succeeded":
+            logger.info(f"[CHECK] Skipping - workflow already healthy (latest run succeeded)")
+            return {
+                "status": "skipped",
+                "workflow_name": workflow_name,
+                "run_id": run_id,
+                "message": "Workflow already healthy - latest run succeeded",
+            }
+        
+        # === OBSERVER: Get run details ===
+        logger.info("[OBSERVER] Fetching failed run...")
         
         run = get_run(token, subscription_id, resource_group, workflow_name, run_id)
         run_status = run.get("properties", {}).get("status", "")
@@ -87,12 +123,21 @@ def run_remediation(
         failed_action_name = None
         failed_action = None
         
-        for action in actions:
-            props = action.get("properties", {})
-            if props.get("status", "").lower() == "failed":
-                failed_action_name = action.get("name", "").split("/")[-1]
-                failed_action = action
-                break
+        # Use smart action picker if available (prioritizes real errors over generic "dependent failed")
+        if pick_primary_failed_action:
+            failed_action = pick_primary_failed_action(actions)
+            if failed_action:
+                failed_action_name = failed_action.get("name", "").split("/")[-1]
+                logger.info(f"[OBSERVER] Primary failed action identified: {failed_action_name}")
+        
+        # Fallback to simple loop if picker not available or didn't find anything
+        if not failed_action:
+            for action in actions:
+                props = action.get("properties", {})
+                if props.get("status", "").lower() == "failed":
+                    failed_action_name = action.get("name", "").split("/")[-1]
+                    failed_action = action
+                    break
         
         if not failed_action:
             return {
@@ -148,6 +193,7 @@ def run_remediation(
             "resource_group": resource_group,
             "failed_action_name": failed_action_name,
             "backup_dir": backup_dir,
+            "failed_action_runtime_json": _failed_action_runtime_snapshot(failed_action),
         }
         
         try:
@@ -162,9 +208,16 @@ def run_remediation(
             }
         
         if not fix_result.get("success"):
-            return fix_result
+            error_msg = fix_result.get("error", "Unknown error")
+            logger.error(f"[FIXER-AGENT] Deployment failed: {error_msg}")
+            return {
+                "status": "failed",
+                "workflow_name": workflow_name,
+                "run_id": run_id,
+                "error": error_msg,
+            }
         
-        logger.info("[FIXER-AGENT] ✅ Fix deployed to Azure")
+        logger.info("[FIXER-AGENT] Fix deployed to Azure")
         
         # === VERIFY: Optional test run ===
         try:
@@ -183,7 +236,7 @@ def run_remediation(
                     body={},
                 )
                 if resp.status_code in (200, 202):
-                    logger.info("[VERIFY] ✅ Test run triggered")
+                    logger.info("[VERIFY] Test run triggered")
         except Exception as e:
             logger.warning(f"[VERIFY] Could not trigger test run: {e}")
         

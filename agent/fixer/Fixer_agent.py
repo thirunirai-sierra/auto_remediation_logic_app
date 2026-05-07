@@ -5,6 +5,7 @@ Then deploys to Azure.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -24,7 +25,51 @@ from auth import get_arm_token
 from config import Settings, get_settings
 from remediation import strip_read_only_for_put, locate_action_node, fix_condition_contains_null
 
+# Import LLM client for dynamic fix generation
+try:
+    from common.llm.llm_client import AICoreLLMClient
+    LLM_AVAILABLE = True
+except ImportError:
+    LLM_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
+
+
+def _arm_http_error_detail(exc: requests.HTTPError, max_len: int = 1800) -> str:
+    """Include Azure ARM error JSON/text so 400 responses are actionable."""
+    base = str(exc)
+    resp = getattr(exc, "response", None)
+    if resp is None or not getattr(resp, "text", "").strip():
+        return base[:max_len]
+    text = resp.text.strip()
+    try:
+        data = resp.json()
+        err = data.get("error") or {}
+        msg = err.get("message") or err.get("code")
+        inner = err.get("details") or []
+        if isinstance(inner, list) and inner:
+            first = inner[0] if isinstance(inner[0], dict) else {}
+            msg = msg or first.get("message") or first.get("code")
+        if msg:
+            return f"{base} | ARM: {msg}"[:max_len]
+    except Exception:
+        pass
+    return f"{base} | ARM body: {text[:1200]}"[:max_len]
+
+
+# Connector input keys whose string values are often Drive-like paths (leading '/' matters).
+_PATH_KEYS_LOWER = frozenset(
+    {
+        "path",
+        "filepath",
+        "folderpath",
+        "itempath",
+        "sourcepath",
+        "destinationpath",
+        "file_path",
+        "folder_path",
+    }
+)
 
 
 class FixerAgent:
@@ -46,6 +91,35 @@ class FixerAgent:
                 self.settings.client_secret,
             )
         return self._token
+    
+    @staticmethod
+    def _normalize_leading_slash_path_fields_in_place(obj: Any) -> bool:
+        """
+        Prepend '/' to literal path-like connector inputs when missing (e.g. Drive path segments).
+        Skips expressions (@...) and absolute URLs.
+        """
+        changed = False
+        if isinstance(obj, dict):
+            for k, v in list(obj.items()):
+                kl = k.lower() if isinstance(k, str) else ""
+                if isinstance(v, str) and kl in _PATH_KEYS_LOWER:
+                    s = v.strip()
+                    if (
+                        s
+                        and not s.startswith(("@", "/", "http://", "https://"))
+                        and not s.startswith("ftp://")
+                    ):
+                        obj[k] = "/" + s.lstrip("/")
+                        changed = True
+                elif isinstance(v, (dict, list)):
+                    if FixerAgent._normalize_leading_slash_path_fields_in_place(v):
+                        changed = True
+        elif isinstance(obj, list):
+            for item in obj:
+                if isinstance(item, (dict, list)):
+                    if FixerAgent._normalize_leading_slash_path_fields_in_place(item):
+                        changed = True
+        return changed
     
     def fix(self, rca_result: Dict[str, Any], workflow_context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -77,6 +151,7 @@ class FixerAgent:
             # 3. Generate fix strategy based on error type
             root_cause = rca_result.get("root_cause", "unknown")
             exact_issue = rca_result.get("exact_issue", "")
+            runtime_hint = str(workflow_context.get("failed_action_runtime_json") or "").strip()
             
             fix_strategy = self._generate_fix_strategy(
                 root_cause=root_cause,
@@ -86,6 +161,7 @@ class FixerAgent:
                 error_message=(
                     f"{rca_result.get('exact_issue', '')} {rca_result.get('solution', '')}"
                 ),
+                runtime_hint=runtime_hint,
             )
             
             logger.info(f"[FIXER] Fix strategy: {fix_strategy.get('strategy_description', 'N/A')}")
@@ -123,7 +199,7 @@ class FixerAgent:
             )
             
             if result.get("success"):
-                logger.info(f"[FIXER] ✅ Fix deployed successfully")
+                logger.info(f"[FIXER] Fix deployed successfully")
                 return {
                     "success": True,
                     "workflow_name": workflow_name,
@@ -156,12 +232,26 @@ class FixerAgent:
         action_type: str,
         action_config: Dict[str, Any],
         error_message: str,
+        runtime_hint: str = "",
     ) -> Dict[str, Any]:
         """Generate fix strategy based on error type."""
         
         root = str(root_cause or "").lower()
         details = str(error_message or "").lower()
         signal = f"{root} {details}"
+
+        # Connector / file NotFound phrases (RCA often omits literal "404")
+        connector_path_not_found = any(
+            p in signal
+            for p in (
+                "could not be matched",
+                "path-based lookup",
+                "specified path could not",
+                "didn't resolve to",
+                "notfound because",
+                "within the authenticated drive",
+            )
+        )
 
         # Strategy for contains() null / payload schema issues
         if root in ("payload_or_schema_error", "null_reference_error") or (
@@ -193,15 +283,44 @@ class FixerAgent:
                 "changes_applied": True,
             }
         
-        # Strategy for 404 error
-        elif root == "not_found" or "404" in signal or "not found" in signal:
+        # Strategy for 404 — HTTP vs connectors (do not overwrite Drive/API inputs with uri)
+        elif (
+            root == "not_found"
+            or "404" in signal
+            or "not found" in signal
+            or connector_path_not_found
+        ):
+            inputs_cfg = action_config.get("inputs") or {}
+            action_lower = str(action_type or "").lower()
+            is_http_like = (
+                action_lower == "http"
+                or "httprequest" in action_lower
+                or bool(inputs_cfg.get("uri"))
+            )
+            if is_http_like:
+                return {
+                    "strategy_description": "Fix 404 error by updating HTTP URI",
+                    "changes": {"inputs": {"uri": self.settings.fallback_http_url}},
+                    "explanation": "The endpoint returned 404. Updated to configured fallback HTTP URL.",
+                    "risk": "medium",
+                    "changes_applied": True,
+                }
+            probe = copy.deepcopy(inputs_cfg)
+            if self._normalize_leading_slash_path_fields_in_place(probe):
+                return {
+                    "strategy_description": "Normalize connector path with leading '/' for 404 NotFound",
+                    "fix_type": "path_leading_slash_normalize",
+                    "changes": {},
+                    "explanation": "Relative path literal detected on connector input; prepended '/' per provider conventions.",
+                    "risk": "low",
+                    "changes_applied": True,
+                }
             return {
-                "strategy_description": "Fix 404 error by updating API endpoint",
-                "changes": {
-                    "inputs": {"uri": self.settings.fallback_http_url}
-                },
-                "explanation": "The endpoint returned 404. Updated to a working fallback endpoint.",
-                "risk": "medium",
+                "strategy_description": "Add retry policy for connector 404",
+                "fix_type": "retry_fixed",
+                "changes": {"retryPolicy": {"type": "fixed", "count": 4, "interval": "PT20S"}},
+                "explanation": "404 on connector; retry only (cannot infer correct resource path). See runtime snapshot for resolved inputs.",
+                "risk": "low",
                 "changes_applied": True,
             }
         
@@ -257,10 +376,34 @@ class FixerAgent:
                 "changes_applied": True,
             }
         
-        # Generic strategy
+        # NEW: Use LLM to generate fix for unknown error patterns
         else:
+            logger.info(f"[FIXER] No known pattern matched for '{root_cause}', trying LLM...")
+            
+            # Try to get LLM-generated fix
+            llm_fix = self._generate_fix_with_llm(
+                action_config=action_config,
+                action_name=action_config.get("name", "unknown"),
+                action_type=action_type,
+                error_message=error_message,
+                root_cause=root_cause,
+                exact_issue=exact_issue,
+                runtime_hint=runtime_hint,
+            )
+            
+            if llm_fix:
+                return {
+                    "strategy_description": f"LLM-generated fix for {root_cause}",
+                    "fix_type": "llm_generated",
+                    "changes": llm_fix,  # The entire fixed action config
+                    "explanation": f"LLM analyzed the error and generated a fix: {exact_issue}",
+                    "risk": "medium",
+                    "changes_applied": True,
+                }
+            
+            # Fallback: no fix available
             return {
-                "strategy_description": f"Apply standard fix for {root_cause}",
+                "strategy_description": f"No fix available for {root_cause}",
                 "changes": {},
                 "explanation": exact_issue,
                 "risk": "low",
@@ -382,6 +525,93 @@ class FixerAgent:
         
         return fixed
     
+    def _generate_fix_with_llm(
+        self,
+        action_config: Dict[str, Any],
+        action_name: str,
+        action_type: str,
+        error_message: str,
+        root_cause: str,
+        exact_issue: str,
+        runtime_hint: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Use LLM to generate a fix for the failed action.
+        Returns the fixed action configuration or None if LLM fails.
+        """
+        if not LLM_AVAILABLE:
+            logger.warning("[FIXER-LLM] LLM client not available")
+            return None
+        
+        try:
+            llm_client = AICoreLLMClient.from_env()
+        except Exception as e:
+            logger.warning(f"[FIXER-LLM] Failed to initialize LLM client: {e}")
+            return None
+        
+        # Create the prompt for LLM
+        system_prompt = """You are an Azure Logic Apps expert who fixes workflow errors.
+
+Given a failed action configuration and error details, return a FIXED version of the action configuration as JSON.
+
+Rules:
+1. Only return the fixed action JSON object, nothing else
+2. Keep the structure intact, only modify what's needed to fix the error
+3. Common fixes include:
+   - Wrapping expressions with coalesce() for null errors
+   - Adding retry policies for timeout/throttling
+   - Fixing invalid expressions or syntax
+   - Adding error handling with runAfter configurations
+   - Fixing URL or path issues (including leading '/' on connector path fields when inputs show a relative path)
+4. If runtime_inputs_outputs_json is present, use it to see evaluated paths/payloads at failure time; align expressions or literals accordingly.
+5. Do NOT change the action type
+6. Return valid JSON only, no markdown, no explanation
+
+Example output format:
+{"type": "Http", "inputs": {"method": "GET", "uri": "https://..."}, "retryPolicy": {"type": "fixed", "count": 3}}
+"""
+
+        payload = {
+            "action_name": action_name,
+            "action_type": action_type,
+            "current_action_config": action_config,
+            "error_details": {
+                "root_cause": root_cause,
+                "exact_issue": exact_issue,
+                "error_message": error_message,
+            },
+            "instruction": "Fix this action to resolve the error. Return only the fixed action JSON.",
+        }
+        if runtime_hint:
+            payload["runtime_inputs_outputs_json"] = runtime_hint
+
+        user_prompt = json.dumps(payload, indent=2, default=str)
+        
+        logger.info(f"[FIXER-LLM] Asking LLM to generate fix for {action_name}")
+        
+        try:
+            result = llm_client.complete_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                required_keys=None,  # Action structure varies
+            )
+            
+            if result and isinstance(result, dict):
+                # Validate the response has basic structure
+                if "type" in result or "inputs" in result or "expression" in result:
+                    logger.info(f"[FIXER-LLM] LLM generated fix successfully")
+                    return result
+                else:
+                    logger.warning("[FIXER-LLM] LLM response missing expected action fields")
+                    return None
+            else:
+                logger.warning("[FIXER-LLM] LLM returned invalid response")
+                return None
+                
+        except Exception as e:
+            logger.error(f"[FIXER-LLM] LLM call failed: {e}")
+            return None
+    
     def _apply_fix_to_workflow(
         self,
         workflow: Dict[str, Any],
@@ -389,8 +619,6 @@ class FixerAgent:
         failed_action_name: str,
     ) -> Optional[Dict[str, Any]]:
         """Apply the fix to the workflow definition."""
-        import copy
-        
         try:
             fixed_workflow = copy.deepcopy(workflow)
             definition = fixed_workflow.get("properties", {}).get("definition", {})
@@ -417,6 +645,43 @@ class FixerAgent:
                 if not self._apply_div_zero_guard_recursive(action_node):
                     logger.warning("[FIXER] div_zero_guard strategy produced no node changes")
                     return None
+            elif fix_type == "path_leading_slash_normalize":
+                inputs_obj = action_node.get("inputs")
+                if not isinstance(inputs_obj, dict):
+                    logger.warning("[FIXER] path_leading_slash_normalize: no inputs dict")
+                    return None
+                if not self._normalize_leading_slash_path_fields_in_place(inputs_obj):
+                    logger.warning("[FIXER] path_leading_slash_normalize produced no changes")
+                    return None
+                logger.info(f"[FIXER] Leading-slash path normalize applied to {failed_action_name}")
+            elif fix_type == "llm_generated":
+                # LLM generated a complete fixed action - merge carefully
+                logger.info("[FIXER] Applying LLM-generated fix")
+                llm_changes = changes  # This is the full action config from LLM
+                
+                # Preserve critical fields from original action
+                original_type = action_node.get("type")
+                original_run_after = action_node.get("runAfter")
+                
+                # Update action with LLM changes
+                for field, value in llm_changes.items():
+                    if field == "inputs" and isinstance(action_node.get("inputs"), dict) and isinstance(value, dict):
+                        # Merge inputs rather than replace
+                        action_node["inputs"].update(value)
+                    elif field == "type":
+                        # Don't change action type - keep original
+                        continue
+                    elif field == "runAfter" and original_run_after:
+                        # Preserve original runAfter unless LLM explicitly set it
+                        continue
+                    else:
+                        action_node[field] = value
+                
+                # Ensure type is preserved
+                if original_type:
+                    action_node["type"] = original_type
+                
+                logger.info(f"[FIXER] LLM fix applied to {failed_action_name}")
             else:
                 for field, value in changes.items():
                     if field == "expression":
@@ -458,7 +723,7 @@ class FixerAgent:
                     etag=etag if attempt == 0 else "*",
                 )
                 
-                logger.info(f"[FIXER] ✅ Successfully deployed")
+                logger.info(f"[FIXER] Successfully deployed")
                 return {"success": True, "updated_workflow": result}
                 
             except requests.HTTPError as e:
@@ -466,7 +731,9 @@ class FixerAgent:
                     logger.warning(f"[FIXER] Conflict, retrying...")
                     time.sleep(2 ** attempt)
                     continue
-                return {"success": False, "error": str(e)[:200]}
+                detail = _arm_http_error_detail(e)
+                logger.error("[FIXER] PUT workflow failed: %s", detail)
+                return {"success": False, "error": detail}
             
             except Exception as e:
                 return {"success": False, "error": str(e)}

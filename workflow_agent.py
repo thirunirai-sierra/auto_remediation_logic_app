@@ -181,7 +181,7 @@ Return the COMPLETE FIXED workflow definition as JSON."""
         json_match = re.search(r"\{[\s\S]*\}", content)
         if json_match:
             fixed_definition = json.loads(json_match.group())
-            logger.info("[LLM] ✅ Successfully generated fixed workflow definition")
+            logger.info("[LLM] Successfully generated fixed workflow definition")
             return fixed_definition
         else:
             logger.warning("[LLM] No valid JSON found in LLM response")
@@ -491,7 +491,7 @@ def run_remediation(
             )
             
             if llm_fixed_definition:
-                logger.info("[LLM] ✅ Using LLM-generated workflow definition")
+                logger.info("[LLM] Using LLM-generated workflow definition")
                 patched = put_body.copy()
                 if "properties" not in patched:
                     patched["properties"] = {}
@@ -567,7 +567,7 @@ def run_remediation(
                 patched,
                 etag=etag,
             )
-            logger.info(f"[DEPLOY] ✅ Workflow deployed successfully!")
+            logger.info(f"[DEPLOY] Workflow deployed successfully!")
             fix_applied = True
             
         except requests.HTTPError as he:
