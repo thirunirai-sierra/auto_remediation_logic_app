@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import requests
+import re
 import signal
 import sys
 import time
@@ -31,8 +33,9 @@ from typing import Any, Dict, List, Optional, Set
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
+from hdbcli import dbapi
 
 # Import our modules
 from config import get_settings, Settings
@@ -380,6 +383,210 @@ class RemediationAPI:
     
     def _register_routes(self, app: FastAPI):
         """Register API routes."""
+        def _hana_table_name() -> str:
+            return (os.getenv("HANA_OBSERVABILITY_TABLE") or "LOGIC_APPS_OBSERVABILITY").strip().strip('"')
+
+        def _hana_connection():
+            base = {
+                "address": str(self.settings.hana_host).strip().strip('"'),
+                "port": int(self.settings.hana_port),
+                "user": str(self.settings.hana_user).strip().strip('"'),
+                "password": str(self.settings.hana_password).strip().strip('"'),
+                "encrypt": True,
+            }
+            try:
+                return dbapi.connect(**base, sslValidateCertificate=False)
+            except Exception:
+                return dbapi.connect(**base)
+
+        def _read_incidents_from_hana(top: int) -> List[Dict[str, Any]]:
+            table = _hana_table_name()
+            schema = str(self.settings.hana_schema).strip().strip('"')
+            conn = _hana_connection()
+            cur = conn.cursor()
+            try:
+                cur.execute(f'SET SCHEMA "{schema}"')
+                cur.execute(
+                    f"""
+                    SELECT TOP {int(top)}
+                        INCIDENT_ID,
+                        SUBSCRIPTION_ID,
+                        WORKFLOW_NAME,
+                        COALESCE(ERROR_CODE, ERROR_CATEGORY),
+                        ERROR_MESSAGE,
+                        COALESCE(UPDATED_AT, CREATED_AT)
+                    FROM "{table}"
+                    WHERE UPPER(COALESCE(STATUS, '')) IN ('FAILED', 'ERROR', 'IN_PROGRESS', 'PENDING')
+                    ORDER BY COALESCE(UPDATED_AT, CREATED_AT) DESC
+                    """
+                )
+                rows = cur.fetchall()
+                return [
+                    {
+                        "incidentId": row[0],
+                        "subscriptionId": row[1],
+                        "integrationScenario": row[2],
+                        "errorType": row[3],
+                        "errorMessage": row[4],
+                        "time": row[5].isoformat() if row[5] is not None else None,
+                    }
+                    for row in rows
+                ]
+            finally:
+                cur.close()
+                conn.close()
+
+        def _read_overview_from_hana(top: int) -> Dict[str, Any]:
+            table = _hana_table_name()
+            schema = str(self.settings.hana_schema).strip().strip('"')
+            conn = _hana_connection()
+            cur = conn.cursor()
+            try:
+                cur.execute(f'SET SCHEMA "{schema}"')
+
+                cur.execute(f'SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM "{table}"')
+                total_flows = int(cur.fetchone()[0] or 0)
+                cur.execute(f'SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM "{table}" WHERE UPPER(COALESCE(STATUS, \'\')) IN (\'FAILED\', \'ERROR\')')
+                error_flows = int(cur.fetchone()[0] or 0)
+                cur.execute(f'SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM "{table}" WHERE AUTO_FIX_SUCCESS = TRUE')
+                fixed_flows = int(cur.fetchone()[0] or 0)
+
+                cur.execute(
+                    f"""
+                    SELECT COALESCE(STATUS, 'UNKNOWN') AS S, COUNT(*)
+                    FROM "{table}"
+                    GROUP BY COALESCE(STATUS, 'UNKNOWN')
+                    ORDER BY COUNT(*) DESC
+                    """
+                )
+                status_breakdown = [{"status": r[0], "count": int(r[1] or 0)} for r in cur.fetchall()]
+
+                cur.execute(
+                    f"""
+                    SELECT COALESCE(ERROR_CATEGORY, ERROR_CODE, 'UNKNOWN') AS E, COUNT(*)
+                    FROM "{table}"
+                    GROUP BY COALESCE(ERROR_CATEGORY, ERROR_CODE, 'UNKNOWN')
+                    ORDER BY COUNT(*) DESC
+                    """
+                )
+                error_distribution = [{"error_type": r[0], "count": int(r[1] or 0)} for r in cur.fetchall()]
+
+                cur.execute(
+                    f"""
+                    SELECT TOP 10 WORKFLOW_NAME, COUNT(*)
+                    FROM "{table}"
+                    WHERE UPPER(COALESCE(STATUS, '')) IN ('FAILED', 'ERROR')
+                    GROUP BY WORKFLOW_NAME
+                    ORDER BY COUNT(*) DESC
+                    """
+                )
+                top_iflows = [{"iflow_name": r[0] or "-", "failure_count": int(r[1] or 0)} for r in cur.fetchall()]
+
+                cur.execute(
+                    f"""
+                    SELECT TOP {int(top)}
+                        WORKFLOW_NAME,
+                        COALESCE(ERROR_CODE, ERROR_CATEGORY),
+                        ERROR_MESSAGE,
+                        COALESCE(UPDATED_AT, CREATED_AT),
+                        NULL,
+                        COALESCE(STATUS, 'UNKNOWN'),
+                        INCIDENT_ID
+                    FROM "{table}"
+                    WHERE ERROR_MESSAGE IS NOT NULL
+                    ORDER BY COALESCE(UPDATED_AT, CREATED_AT) DESC
+                    """
+                )
+                error_messages = [
+                    {
+                        "integrationScenario": r[0],
+                        "errorType": r[1],
+                        "errorMessage": r[2],
+                        "time": r[3].isoformat() if r[3] is not None else None,
+                        "resourceId": r[4],
+                        "status": r[5],
+                        "runId": r[6],
+                    }
+                    for r in cur.fetchall()
+                ]
+
+                return {
+                    "kpi": {
+                        "total_flows": total_flows,
+                        "error_flows": error_flows,
+                        "fixed_flows": fixed_flows,
+                        "total_logs": sum(s["count"] for s in status_breakdown),
+                        "total_error_messages": len(error_messages),
+                    },
+                    "status_breakdown": status_breakdown,
+                    "error_distribution": error_distribution,
+                    "top_iflows": top_iflows,
+                    "timeline": [],
+                    "error_messages": error_messages,
+                }
+            finally:
+                cur.close()
+                conn.close()
+
+        def _query_log_analytics(query: str, *, hours: int) -> Dict[str, Any]:
+            workspace_id = (self.settings.log_analytics_workspace_id or "").strip()
+            if not workspace_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="LOG_ANALYTICS_WORKSPACE_ID is not configured",
+                )
+            tenant_id = (self.settings.tenant_id or "").strip()
+            client_id = (self.settings.client_id or "").strip()
+            client_secret = (self.settings.client_secret or "").strip()
+            if not (tenant_id and client_id and client_secret):
+                raise HTTPException(
+                    status_code=400,
+                    detail="AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET are required",
+                )
+
+            token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+            query_url = f"https://api.loganalytics.io/v1/workspaces/{workspace_id}/query"
+            token_form = {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "scope": "https://api.loganalytics.io/.default",
+                "grant_type": "client_credentials",
+            }
+            try:
+                token_resp = requests.post(
+                    token_url,
+                    data=token_form,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=30,
+                )
+                token_resp.raise_for_status()
+                access_token = token_resp.json().get("access_token", "")
+                if not access_token:
+                    raise RuntimeError("Azure AD token response missing access_token")
+
+                logs_resp = requests.post(
+                    query_url,
+                    json={"query": query},
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=45,
+                )
+                if not logs_resp.ok:
+                    body_preview = (logs_resp.text or "")[:1500]
+                    raise RuntimeError(
+                        f"Log Analytics query failed: status={logs_resp.status_code} body={body_preview}"
+                    )
+                return logs_resp.json()
+            except HTTPException:
+                raise
+            except Exception as ex:
+                logger.error("Failed to query Log Analytics: %s", ex)
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to fetch logs from Azure Monitor: {ex}",
+                ) from ex
         
         @app.get("/")
         async def root():
@@ -418,6 +625,30 @@ class RemediationAPI:
                     "monitor_running": self.monitor._is_running if self.monitor else False,
                 }
             return {"message": "Monitor not initialized"}
+
+        @app.get("/incidents")
+        async def get_incidents(
+            top: int = Query(100, ge=1, le=100),
+        ):
+            """
+            Return dashboard incidents from HANA DB only.
+            """
+            try:
+                return _read_incidents_from_hana(top)
+            except Exception as ex:
+                raise HTTPException(status_code=500, detail=f"Failed to read incidents from HANA: {ex}") from ex
+
+        @app.get("/logs/overview")
+        async def get_logs_overview(
+            top: int = Query(1000, ge=1, le=5000),
+        ):
+            """
+            Return dashboard overview from HANA DB only.
+            """
+            try:
+                return _read_overview_from_hana(top)
+            except Exception as ex:
+                raise HTTPException(status_code=500, detail=f"Failed to read overview from HANA: {ex}") from ex
         
         @app.post("/remediate")
         async def remediate_all(background_tasks: BackgroundTasks):
