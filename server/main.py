@@ -35,6 +35,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
+from hdbcli import dbapi
 
 # Import our modules
 from config import get_settings, Settings
@@ -359,6 +360,151 @@ class RemediationAPI:
     
     def _register_routes(self, app: FastAPI):
         """Register API routes."""
+        def _hana_table_name() -> str:
+            return (os.getenv("HANA_OBSERVABILITY_TABLE") or "LOGIC_APPS_OBSERVABILITY").strip().strip('"')
+
+        def _hana_connection():
+            base = {
+                "address": str(self.settings.hana_host).strip().strip('"'),
+                "port": int(self.settings.hana_port),
+                "user": str(self.settings.hana_user).strip().strip('"'),
+                "password": str(self.settings.hana_password).strip().strip('"'),
+                "encrypt": True,
+            }
+            try:
+                return dbapi.connect(**base, sslValidateCertificate=False)
+            except Exception:
+                return dbapi.connect(**base)
+
+        def _read_incidents_from_hana(top: int) -> List[Dict[str, Any]]:
+            table = _hana_table_name()
+            schema = str(self.settings.hana_schema).strip().strip('"')
+            conn = _hana_connection()
+            cur = conn.cursor()
+            try:
+                cur.execute(f'SET SCHEMA "{schema}"')
+                cur.execute(
+                    f"""
+                    SELECT TOP {int(top)}
+                        INCIDENT_ID,
+                        SUBSCRIPTION_ID,
+                        WORKFLOW_NAME,
+                        COALESCE(ERROR_CODE, ERROR_CATEGORY),
+                        ERROR_MESSAGE,
+                        COALESCE(UPDATED_AT, CREATED_AT)
+                    FROM "{table}"
+                    WHERE UPPER(COALESCE(STATUS, '')) IN ('FAILED', 'ERROR', 'IN_PROGRESS', 'PENDING')
+                    ORDER BY COALESCE(UPDATED_AT, CREATED_AT) DESC
+                    """
+                )
+                rows = cur.fetchall()
+                return [
+                    {
+                        "incidentId": row[0],
+                        "subscriptionId": row[1],
+                        "integrationScenario": row[2],
+                        "errorType": row[3],
+                        "errorMessage": row[4],
+                        "time": row[5].isoformat() if row[5] is not None else None,
+                    }
+                    for row in rows
+                ]
+            finally:
+                cur.close()
+                conn.close()
+
+        def _read_overview_from_hana(top: int) -> Dict[str, Any]:
+            table = _hana_table_name()
+            schema = str(self.settings.hana_schema).strip().strip('"')
+            conn = _hana_connection()
+            cur = conn.cursor()
+            try:
+                cur.execute(f'SET SCHEMA "{schema}"')
+
+                cur.execute(f'SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM "{table}"')
+                total_flows = int(cur.fetchone()[0] or 0)
+                cur.execute(f'SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM "{table}" WHERE UPPER(COALESCE(STATUS, \'\')) IN (\'FAILED\', \'ERROR\')')
+                error_flows = int(cur.fetchone()[0] or 0)
+                cur.execute(f'SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM "{table}" WHERE AUTO_FIX_SUCCESS = TRUE')
+                fixed_flows = int(cur.fetchone()[0] or 0)
+
+                cur.execute(
+                    f"""
+                    SELECT COALESCE(STATUS, 'UNKNOWN') AS S, COUNT(*)
+                    FROM "{table}"
+                    GROUP BY COALESCE(STATUS, 'UNKNOWN')
+                    ORDER BY COUNT(*) DESC
+                    """
+                )
+                status_breakdown = [{"status": r[0], "count": int(r[1] or 0)} for r in cur.fetchall()]
+
+                cur.execute(
+                    f"""
+                    SELECT COALESCE(ERROR_CATEGORY, ERROR_CODE, 'UNKNOWN') AS E, COUNT(*)
+                    FROM "{table}"
+                    GROUP BY COALESCE(ERROR_CATEGORY, ERROR_CODE, 'UNKNOWN')
+                    ORDER BY COUNT(*) DESC
+                    """
+                )
+                error_distribution = [{"error_type": r[0], "count": int(r[1] or 0)} for r in cur.fetchall()]
+
+                cur.execute(
+                    f"""
+                    SELECT TOP 10 WORKFLOW_NAME, COUNT(*)
+                    FROM "{table}"
+                    WHERE UPPER(COALESCE(STATUS, '')) IN ('FAILED', 'ERROR')
+                    GROUP BY WORKFLOW_NAME
+                    ORDER BY COUNT(*) DESC
+                    """
+                )
+                top_iflows = [{"iflow_name": r[0] or "-", "failure_count": int(r[1] or 0)} for r in cur.fetchall()]
+
+                cur.execute(
+                    f"""
+                    SELECT TOP {int(top)}
+                        WORKFLOW_NAME,
+                        COALESCE(ERROR_CODE, ERROR_CATEGORY),
+                        ERROR_MESSAGE,
+                        COALESCE(UPDATED_AT, CREATED_AT),
+                        NULL,
+                        COALESCE(STATUS, 'UNKNOWN'),
+                        INCIDENT_ID
+                    FROM "{table}"
+                    WHERE ERROR_MESSAGE IS NOT NULL
+                    ORDER BY COALESCE(UPDATED_AT, CREATED_AT) DESC
+                    """
+                )
+                error_messages = [
+                    {
+                        "integrationScenario": r[0],
+                        "errorType": r[1],
+                        "errorMessage": r[2],
+                        "time": r[3].isoformat() if r[3] is not None else None,
+                        "resourceId": r[4],
+                        "status": r[5],
+                        "runId": r[6],
+                    }
+                    for r in cur.fetchall()
+                ]
+
+                return {
+                    "kpi": {
+                        "total_flows": total_flows,
+                        "error_flows": error_flows,
+                        "fixed_flows": fixed_flows,
+                        "total_logs": sum(s["count"] for s in status_breakdown),
+                        "total_error_messages": len(error_messages),
+                    },
+                    "status_breakdown": status_breakdown,
+                    "error_distribution": error_distribution,
+                    "top_iflows": top_iflows,
+                    "timeline": [],
+                    "error_messages": error_messages,
+                }
+            finally:
+                cur.close()
+                conn.close()
+
         def _query_log_analytics(query: str, *, hours: int) -> Dict[str, Any]:
             workspace_id = (self.settings.log_analytics_workspace_id or "").strip()
             if not workspace_id:
@@ -459,180 +605,27 @@ class RemediationAPI:
 
         @app.get("/incidents")
         async def get_incidents(
-            hours: int = Query(24, ge=1, le=168),
             top: int = Query(100, ge=1, le=100),
         ):
             """
-            Fetch failed Logic App incidents from Azure Log Analytics and return
-            a normalized payload for dashboard consumption.
+            Return dashboard incidents from HANA DB only.
             """
-            query = f"""
-AzureDiagnostics
-| where ResourceProvider == "MICROSOFT.LOGIC"
-| where TimeGenerated > ago({hours}h)
-| extend _resourceId = tostring(column_ifexists("_ResourceId", ""))
-| extend _status = tostring(coalesce(column_ifexists("status_s", ""), column_ifexists("Status_s", ""), column_ifexists("status", ""), column_ifexists("Status", "")))
-| extend _incident = tostring(coalesce(column_ifexists("correlation_actionTrackingId_s", ""), extract(@"/runs/([^/]+)", 1, _resourceId)))
-| extend _subscription = tostring(coalesce(column_ifexists("_SubscriptionId", ""), column_ifexists("SubscriptionId", "")))
-| extend _workflow = tostring(coalesce(column_ifexists("resource_workflowName_s", ""), extract(@"/workflows/([^/]+)", 1, _resourceId)))
-| extend _errorType = tostring(coalesce(column_ifexists("error_code_s", ""), column_ifexists("code_s", ""), column_ifexists("ErrorCode", "")))
-| extend _errorMessage = tostring(coalesce(column_ifexists("error_message_s", ""), column_ifexists("ErrorMessage", ""), column_ifexists("message", "")))
-| where _status =~ "Failed" or toupper(tostring(column_ifexists("Level", ""))) == "ERROR"
-| project
-    incidentId = _incident,
-    subscriptionId = _subscription,
-    integrationScenario = _workflow,
-    errorType = _errorType,
-    errorMessage = _errorMessage,
-    eventTime = TimeGenerated
-| top {top} by eventTime desc
-"""
-            result = _query_log_analytics(query, hours=hours)
-
-            table = (result.get("tables") or [{}])[0]
-            rows = table.get("rows") or []
-            incidents = [
-                {
-                    "incidentId": row[0] if len(row) > 0 else None,
-                    "subscriptionId": row[1] if len(row) > 1 else None,
-                    "integrationScenario": row[2] if len(row) > 2 else None,
-                    "errorType": row[3] if len(row) > 3 else None,
-                    "errorMessage": row[4] if len(row) > 4 else None,
-                    "time": row[5] if len(row) > 5 else None,
-                }
-                for row in rows
-            ]
-            return incidents
+            try:
+                return _read_incidents_from_hana(top)
+            except Exception as ex:
+                raise HTTPException(status_code=500, detail=f"Failed to read incidents from HANA: {ex}") from ex
 
         @app.get("/logs/overview")
         async def get_logs_overview(
-            hours: int = Query(24, ge=1, le=168),
             top: int = Query(1000, ge=1, le=5000),
         ):
             """
-            Aggregate Logic App workspace logs for dashboard KPIs and charts.
+            Return dashboard overview from HANA DB only.
             """
-            query = f"""
-AzureDiagnostics
-| where ResourceProvider == "MICROSOFT.LOGIC"
-| where TimeGenerated > ago({hours}h)
-| project
-    eventTime = TimeGenerated,
-    resourceId = tostring(column_ifexists("_ResourceId", "")),
-    subscriptionId = tostring(column_ifexists("_SubscriptionId", "")),
-    integrationScenario = tostring(coalesce(column_ifexists("resource_workflowName_s", ""), extract(@"/workflows/([^/]+)", 1, tostring(column_ifexists("_ResourceId", ""))))),
-    status = tostring(coalesce(column_ifexists("status_s", ""), column_ifexists("Status_s", ""), column_ifexists("status", ""), column_ifexists("Status", ""))),
-    errorType = tostring(coalesce(column_ifexists("error_code_s", ""), column_ifexists("code_s", ""), column_ifexists("ErrorCode", ""))),
-    errorMessage = tostring(coalesce(column_ifexists("error_message_s", ""), column_ifexists("ErrorMessage", ""), column_ifexists("message", ""))),
-    level = tostring(column_ifexists("Level", "")),
-    operationName = tostring(column_ifexists("OperationName", ""))
-| order by eventTime desc
-| take {top}
-"""
-            result = _query_log_analytics(query, hours=hours)
-            table = (result.get("tables") or [{}])[0]
-            rows = table.get("rows") or []
-
-            logs: List[Dict[str, Any]] = []
-            flow_names: Set[str] = set()
-            error_flows: Set[str] = set()
-            fixed_flows: Set[str] = set()
-            status_counts: Dict[str, int] = {}
-            error_counts: Dict[str, int] = {}
-            timeline_counts: Dict[str, int] = {}
-            iflow_failures: Dict[str, int] = {}
-
-            for row in rows:
-                item = {
-                    "time": row[0] if len(row) > 0 else None,
-                    "resourceId": row[1] if len(row) > 1 else "",
-                    "subscriptionId": row[2] if len(row) > 2 else None,
-                    "integrationScenario": row[3] if len(row) > 3 else None,
-                    "status": row[4] if len(row) > 4 else "",
-                    "errorType": row[5] if len(row) > 5 else "",
-                    "errorMessage": row[6] if len(row) > 6 else "",
-                    "level": row[7] if len(row) > 7 else "",
-                    "operationName": row[8] if len(row) > 8 else "",
-                }
-                logs.append(item)
-
-                flow = str(item.get("integrationScenario") or "").strip()
-                if flow:
-                    flow_names.add(flow)
-
-                status = str(item.get("status") or "").strip()
-                status_key = status.upper() if status else "UNKNOWN"
-                status_counts[status_key] = status_counts.get(status_key, 0) + 1
-
-                resource_id = str(item.get("resourceId") or "")
-                level = str(item.get("level") or "").upper()
-                error_message = str(item.get("errorMessage") or "").strip()
-                error_type = str(item.get("errorType") or "").strip() or "UNKNOWN"
-                is_failed = (
-                    status.lower() == "failed"
-                    or level == "ERROR"
-                    or bool(error_message)
-                    or "/ACTIONS/FAIL_" in resource_id.upper()
-                )
-                is_fixed = (
-                    status.lower() in ("succeeded", "success")
-                    or "/ACTIONS/SUCCESS_" in resource_id.upper()
-                )
-                if flow and is_failed:
-                    error_flows.add(flow)
-                    iflow_failures[flow] = iflow_failures.get(flow, 0) + 1
-                    error_counts[error_type] = error_counts.get(error_type, 0) + 1
-                if flow and is_fixed:
-                    fixed_flows.add(flow)
-
-                if item.get("time"):
-                    bucket = str(item["time"])[:13]  # YYYY-MM-DDTHH
-                    timeline_counts[bucket] = timeline_counts.get(bucket, 0) + 1
-
-            def _extract_run_id(resource_id: str) -> Optional[str]:
-                m = re.search(r"/RUNS/([^/]+)", resource_id or "", re.IGNORECASE)
-                return m.group(1) if m else None
-
-            error_messages = [
-                {
-                    "integrationScenario": i.get("integrationScenario"),
-                    "errorType": i.get("errorType"),
-                    "errorMessage": i.get("errorMessage"),
-                    "time": i.get("time"),
-                    "resourceId": i.get("resourceId"),
-                    "status": i.get("status"),
-                    "runId": _extract_run_id(str(i.get("resourceId") or "")),
-                }
-                for i in logs
-                if str(i.get("errorMessage") or "").strip()
-            ][:100]
-
-            return {
-                "kpi": {
-                    "total_flows": len(flow_names),
-                    "error_flows": len(error_flows),
-                    "fixed_flows": len(fixed_flows),
-                    "total_logs": len(logs),
-                    "total_error_messages": len(error_messages),
-                },
-                "status_breakdown": [
-                    {"status": k, "count": v}
-                    for k, v in sorted(status_counts.items(), key=lambda x: x[1], reverse=True)
-                ],
-                "error_distribution": [
-                    {"error_type": k, "count": v}
-                    for k, v in sorted(error_counts.items(), key=lambda x: x[1], reverse=True)
-                ],
-                "top_iflows": [
-                    {"iflow_name": k, "failure_count": v}
-                    for k, v in sorted(iflow_failures.items(), key=lambda x: x[1], reverse=True)[:10]
-                ],
-                "timeline": [
-                    {"time": k, "count": v}
-                    for k, v in sorted(timeline_counts.items())
-                ],
-                "error_messages": error_messages,
-            }
+            try:
+                return _read_overview_from_hana(top)
+            except Exception as ex:
+                raise HTTPException(status_code=500, detail=f"Failed to read overview from HANA: {ex}") from ex
         
         @app.post("/remediate")
         async def remediate_all(background_tasks: BackgroundTasks):

@@ -1,7 +1,11 @@
 export const API_PRIMARY =
   import.meta.env.VITE_API_PRIMARY ?? "https://ND-ORBIT.cfapps.us10-001.hana.ondemand.com";
 const API_BASE = (import.meta.env.VITE_API_BASE ?? API_PRIMARY).replace(/\/+$/, "");
-const LOG_API_BASE = (import.meta.env.VITE_LOG_API_BASE ?? API_BASE).replace(/\/+$/, "");
+const isLocalHost =
+  typeof window !== "undefined" &&
+  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+const LOG_API_FALLBACK = isLocalHost ? "http://localhost:8000" : API_BASE;
+const LOG_API_BASE = (import.meta.env.VITE_LOG_API_BASE ?? LOG_API_FALLBACK).replace(/\/+$/, "");
 const USER_API_BASE = (import.meta.env.VITE_USER_API_BASE ?? "").replace(/\/+$/, "");
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
