@@ -1,5 +1,11 @@
 .env
 .env.*
+.env.local
+.env.development
+.env.test
+.env.production
+.envrc
+!.env.example
 
 # Python cache and bytecode
 __pycache__/
@@ -15,28 +21,58 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.tox/
+.nox/
 .coverage
+.coverage.*
 coverage/
 htmlcov/
 dist/
 build/
+site/
 *.egg-info/
+pip-wheel-metadata/
 
 # Logs and runtime artifacts
 *.log
+*.out
+*.err
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 workflow_backup_*.json
 *.backup.json
 backups/
 
+# Node.js dependencies/build artifacts
+node_modules/
+client/node_modules/
+server/node_modules/
+client/.vite/
+client/dist/
+client/build/
+server/dist/
+server/build/
+.parcel-cache/
+.next/
+.nuxt/
+.svelte-kit/
+*.tsbuildinfo
+
 # OS/editor artifacts
 .DS_Store
 Thumbs.db
+.cache/
+.eslintcache
 .vscode/
 .idea/
 
 # Temporary folders
 tmp/
 output/
+temp/
+logs/
 
 # Keep required tracked files explicit
 !requirements.txt
