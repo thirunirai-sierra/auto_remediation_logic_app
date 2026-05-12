@@ -31,11 +31,6 @@ import EventMeshFlow from "./EventMeshFlow.tsx";
 // Utility functions
 // ============================================================================
 
-/** Normalize status string: uppercase, spaces to underscores */
-function normalizeStatus(raw: string): string {
-  return (raw || "").toUpperCase().replace(/ /g, "_");
-}
-
 /** Strip raw agent noise from fix_summary strings */
 function cleanFixSummary(raw: string): string {
   if (!raw) return raw;
@@ -162,19 +157,8 @@ const SUCCESS_STATUSES = new Set([
 ]);
 
 // ============================================================================
-// Components: StatusPill, TabBar, etc.
+// Components: TabBar, etc.
 // ============================================================================
-
-function StatusPill({ status }: { status: string }) {
-  const normalized = normalizeStatus(status);
-  const cfg = STATUS_CONFIG[normalized] ?? { ...GREY, label: status || "Unknown" };
-  return (
-    <span className={styles.statusPill} style={{ color: cfg.color, background: cfg.bg }}>
-      <span className={styles.statusDot} style={{ background: cfg.dot }} />
-      {cfg.label}
-    </span>
-  );
-}
 
 type TabKey = "error" | "ai" | "properties" | "artifact" | "attachments" | "history";
 
@@ -584,7 +568,7 @@ export default function Observability() {
       const s = normalizeStatusKey(m.status);
       if (filters.statuses.length) {
         const allowed = filters.statuses.flatMap((g) => STATUS_GROUP[g] || [g]);
-        if (!allowed.includes(normalizedStatus)) return false;
+        if (!allowed.includes(s)) return false;
       }
       if (filters.searchQuery) {
         const q = filters.searchQuery.toLowerCase();
@@ -922,90 +906,6 @@ export default function Observability() {
     await startFixPolling(incidentId);
   }, [detail, startFixPolling]);
 
-  const handleSelect = useCallback(async (msg: IMonitorMessage) => {
-    const guid = msg.message_guid;
-    if (!guid) return;
-    pollAbortRef.current.cancelled = true;
-    setSelectedGuid(guid);
-    setSelectedMsg(msg);
-    setDetail(null);
-    setFixPatch(null);
-    setFixState("idle");
-    setFixResult("");
-    setFixProgress(null);
-    setActiveTab("error");
-    setErrorExplain(null);
-    setErrorExplainLoading(false);
-    setErrorExplainErr(null);
-    setDetailLoading(true);
-    try {
-      const d = await fetchMonitorMessageDetail(guid) as IMessageDetail;
-      setDetail(d);
-      if (d.ai_recommendation?.fix_patch) setFixPatch(d.ai_recommendation.fix_patch);
-      const incStatus = (d.incident_status || "").toUpperCase();
-      if (incStatus === "HUMAN_INITIATED_FIX") {
-        setFixState("skipped");
-        setFixResult(d.ai_recommendation?.fix_summary || "iFlow was already running — no changes were applied.");
-      } else if (incStatus === "FIX_DEPLOYED") {
-        setFixState("deployed_unverified");
-        setFixResult(d.ai_recommendation?.fix_summary || "Fix deployed but XML validation had warnings — verify the iFlow manually.");
-      } else if (["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED"].includes(incStatus)) {
-        setFixState("success");
-        setFixResult(d.ai_recommendation?.fix_summary || "Fix applied and deployed successfully.");
-      } else if (["FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME"].includes(incStatus)) {
-        setFixState("error");
-        setFixResult(d.ai_recommendation?.fix_summary || "Fix failed — see history for details.");
-      }
-      if (d.ai_recommendation?.diagnosis) setActiveTab("ai");
-    } catch {
-      // keep previous state
-    } finally {
-      setDetailLoading(false);
-    }
-  }, []);
-
-  const handleAnalyze = useCallback(async () => {
-    if (!selectedGuid) return;
-    setAnalyzeLoading(true);
-    try {
-      await analyzeMessage(selectedGuid);
-      const d = await fetchMonitorMessageDetail(selectedGuid) as IMessageDetail;
-      setDetail(d);
-      setActiveTab("ai");
-    } catch {
-      // handled
-    } finally {
-      setAnalyzeLoading(false);
-    }
-  }, [selectedGuid]);
-
-  const handleExplainError = useCallback(async () => {
-    if (!selectedGuid) return;
-    setErrorExplainLoading(true);
-    setErrorExplainErr(null);
-    try {
-      const exp = await explainError(selectedGuid) as IErrorExplanation;
-      setErrorExplain(exp);
-    } catch (e) {
-      setErrorExplainErr(e instanceof Error ? e.message : "Failed to explain error");
-    } finally {
-      setErrorExplainLoading(false);
-    }
-  }, [selectedGuid]);
-
-  const handleGenerateFixPatch = useCallback(async () => {
-    if (!selectedGuid) return;
-    setFixPatchLoading(true);
-    try {
-      const patch = await generateFixPatch(selectedGuid) as IFixPatchResponse;
-      setFixPatch(patch);
-    } catch {
-      // handled
-    } finally {
-      setFixPatchLoading(false);
-    }
-  }, [selectedGuid]);
-
   useEffect(() => {
     if (!detail) return;
     const st = normalizeStatusKey(detail.status);
@@ -1031,7 +931,7 @@ export default function Observability() {
       setFixState("error");
       setFixResult(detail.ai_recommendation?.fix_summary || "Fix failed.");
     }
-  }, [detail]);
+  }, [detail, fixState, startFixPolling]);
 
   useEffect(() => {
     return () => { pollAbortRef.current.cancelled = true; };

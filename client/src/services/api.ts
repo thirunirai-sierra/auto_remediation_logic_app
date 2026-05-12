@@ -96,12 +96,18 @@ export type MonitorMessagesSummary = {
   RETRY: number;
 };
 
-export async function fetchMonitorMessages(): Promise<{
+export async function fetchMonitorMessages(
+  limit: unknown = 50,
+  offset: unknown = 0,
+): Promise<{
   messages: unknown[];
   total?: number;
   summary?: MonitorMessagesSummary;
 }> {
-  return request(`${LOG_API_BASE}/api/monitor/messages`);
+  const l = typeof limit === "number" && Number.isFinite(limit) ? limit : 50;
+  const o = typeof offset === "number" && Number.isFinite(offset) ? offset : 0;
+  const params = new URLSearchParams({ limit: String(l), offset: String(o) });
+  return request(`${LOG_API_BASE}/api/monitor/messages?${params}`);
 }
 
 export async function fetchMonitorMessageDetail(guid: string): Promise<unknown> {
@@ -180,57 +186,6 @@ export async function uploadFile(formData: FormData): Promise<unknown> {
 
 export async function fetchDashboardAll(): Promise<Record<string, unknown>> {
   return request(`${API_BASE}/dashboard/all`);
-}
-
-// ----------------------------------------------------------------------
-// NEW OBSERVABILITY ENDPOINTS (matches your FastAPI routes)
-// ----------------------------------------------------------------------
-export async function fetchMonitorMessages(limit = 50, offset = 0): Promise<{ messages: unknown[]; total: number }> {
-  const l = typeof limit === 'number' ? limit : 50;
-  const o = typeof offset === 'number' ? offset : 0;
-  return request(`${API_BASE}/api/monitor/messages?limit=${l}&offset=${o}`);
-}
-
-export async function fetchMonitorMessageDetail(incidentId: string): Promise<unknown> {
-  return request(`${API_BASE}/api/monitor/message/${incidentId}`);
-}
-
-export async function analyzeMessage(incidentId: string, userId = "user"): Promise<unknown> {
-  return request(`${API_BASE}/api/monitor/analyze/${incidentId}`, {
-    method: "POST",
-    body: JSON.stringify({ user_id: userId }),
-  });
-}
-
-export async function explainError(incidentId: string, userId = "user"): Promise<unknown> {
-  return request(`${API_BASE}/api/monitor/explain/${incidentId}`, {
-    method: "POST",
-    body: JSON.stringify({ user_id: userId }),
-  });
-}
-
-export async function generateFixPatch(incidentId: string, userId = "user"): Promise<unknown> {
-  return request(`${API_BASE}/api/monitor/generate-fix/${incidentId}`, {
-    method: "POST",
-    body: JSON.stringify({ user_id: userId }),
-  });
-}
-
-export async function applyMessageFix(
-  incidentId: string,
-  userId = "user",
-  proposedFix?: string,
-  force = false
-): Promise<unknown> {
-  const url = `${API_BASE}/api/monitor/apply-fix/${incidentId}${force ? "?force=true" : ""}`;
-  return request(url, {
-    method: "POST",
-    body: JSON.stringify({ trigger_type: userId, proposed_fix: proposedFix, force }),
-  });
-}
-
-export async function fetchFixStatus(incidentId: string): Promise<unknown> {
-  return request(`${API_BASE}/api/monitor/fix-status/${incidentId}`);
 }
 
 // ----------------------------------------------------------------------
@@ -380,6 +335,15 @@ export async function fetchAemIncidents(
   return {
     incidents: ((data.incidents ?? []) as Record<string, unknown>[]).map(normalizeIncidentForUi),
   };
+}
+
+export interface PaginatedMessagesResponse {
+  messages?: unknown[];
+  total_count?: number;
+  count?: number;
+  page?: number;
+  page_size?: number;
+  [key: string]: unknown;
 }
 
 export async function fetchFailedMessagesPaginated(
