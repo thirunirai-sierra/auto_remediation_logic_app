@@ -84,7 +84,7 @@ class Settings:
     hana_password: str
     hana_schema: str
     hana_table: str
-    
+    hana_observability_table: str
     # Embedding Model (SAP AI Core)
     embedding_deployment_id: str
     vector_dimension: int
@@ -153,7 +153,7 @@ def get_settings() -> Settings:
         hana_password=os.getenv("HANA_PASSWORD", ""),
         hana_schema=os.getenv("HANA_SCHEMA", ""),
         hana_table=os.getenv("HANA_TABLE", "LOGIC_APPS_KNOWLEDGE"),
-        
+        hana_observability_table=os.getenv("HANA_OBSERVABILITY_TABLE", "LOGIC_APPS_OBSERVABILITY"),
         # Embedding Model
         embedding_deployment_id=os.getenv("EMBEDDING_DEPLOYMENT_ID", ""),
         vector_dimension=int(os.getenv("VECTOR_DIMENSION", "3072")),

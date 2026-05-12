@@ -12,16 +12,40 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
+      // Old dashboard & pipeline endpoints
+      "/smart-monitoring": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+      "/autonomous": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+      "/dashboard": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+      "/aem": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+      "/incidents": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+      "/logs": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+      // New observability endpoints (already covered by /api)
+      "/api": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+      // User API (if needed)
       "/user-api": {
         target: "http://localhost:8080",
         changeOrigin: true,
-      },
-      // All /api/* requests → FastAPI backend on localhost:8082
-      // The /api prefix is stripped before forwarding.
-      "/api": {
-        target: "http://localhost:8080",
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },
   },
@@ -31,18 +55,13 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          // SAP UI5 WebComponents — largest chunk, loaded once and cached
           "ui5-core":    ["@ui5/webcomponents-react"],
-          // Recharts only needed on Dashboard
           "recharts":    ["recharts"],
-          // React ecosystem
           "react-vendor": ["react", "react-dom", "react-router-dom"],
-          // State / data-fetching
           "query":       ["@tanstack/react-query", "zustand"],
         },
       },
     },
-    // Warn if any single chunk exceeds 600 KB after splitting
     chunkSizeWarningLimit: 600,
   },
 });

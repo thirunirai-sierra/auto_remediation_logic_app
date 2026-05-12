@@ -459,7 +459,7 @@ async def aem_status():
 
 
 @router.get("/aem/incidents")
-async def aem_incidents(_limit: int = 100):
+async def aem_incidents(limit: int = 100):
     return {"incidents": []}
 
 
