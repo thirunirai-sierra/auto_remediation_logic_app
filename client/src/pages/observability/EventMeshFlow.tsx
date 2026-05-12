@@ -1,3 +1,7 @@
+/**
+ * @fileoverview Observability "Event Mesh" tab: polls AEM status/incidents and MCP tools; diffs incidents into a synthetic live log;
+ * renders `PipelineDiagram`, `StatsRow`, and `EventLog` from the same data.
+ */
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchAemIncidents, fetchAemStatus, fetchMcpTools } from "../../services/api";
@@ -7,6 +11,10 @@ import StatsRow from "./event-mesh/StatsRow";
 import { isIncident, STATUS_ICON, statusToStage, type LogEntry, type Incident } from "./event-mesh/shared";
 import styles from "./EventMeshFlow.module.css";
 
+/**
+ * Wires React Query to diagram, stats, and log; maintains `logEntries` by diffing incident id → status map.
+ * @returns {JSX.Element} Column layout for Event Mesh visualization.
+ */
 export default function EventMeshFlow() {
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const prevMapRef = useRef<Map<string, string>>(new Map());
@@ -36,7 +44,10 @@ export default function EventMeshFlow() {
 
   const incidents: Incident[] = (incidentsData?.incidents ?? []).filter(isIncident);
 
-  // Detect new incidents and status changes to drive the log
+  /**
+   * When incident list changes: append log rows for new ids or status transitions; cap list length at 120.
+   * @returns {void}
+   */
   useEffect(() => {
     if (!incidentsData) return;
     const prev = prevMapRef.current;

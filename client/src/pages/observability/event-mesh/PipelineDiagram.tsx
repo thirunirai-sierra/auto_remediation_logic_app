@@ -1,3 +1,6 @@
+/**
+ * @fileoverview SVG Event Mesh pipeline: CPI through verifier nodes, animated connectors, glow from incident counts.
+ */
 import SvgIcon from "../../../components/icons/SvgIcon";
 import styles from "../EventMeshFlow.module.css";
 import {
@@ -22,6 +25,13 @@ interface PipelineDiagramProps {
   messagesRetrieved: number;
 }
 
+/**
+ * Renders up to five colored dots under a node representing blue/green/red incident mix at that stage.
+ * @param {object} props - Component props.
+ * @param {number} props.cx - SVG x-center for this node's particle row.
+ * @param {NodeCounts} props.counts - Aggregated particle counts from `computeNodeCounts`.
+ * @returns {JSX.Element | null} SVG `<g>` of circles or null when no particles.
+ */
 function NodeParticles({ cx, counts }: { cx: number; counts: NodeCounts }) {
   const slots: string[] = [
     ...Array<string>(Math.min(counts.blue, 5)).fill("#3b82f6"),
@@ -45,6 +55,14 @@ function NodeParticles({ cx, counts }: { cx: number; counts: NodeCounts }) {
   );
 }
 
+/**
+ * Full pipeline card: connection status banner, SVG nodes with badges, and per-node particle rows.
+ * @param {PipelineDiagramProps} props - Incident list and AEM connectivity flags from `EventMeshFlow`.
+ * @param {Incident[]} props.incidents - Drives per-node counts and glow.
+ * @param {boolean} props.aemEnabled - When false, shows disconnected banner and idle CPI styling.
+ * @param {number} props.messagesRetrieved - Webhook/message counter for CPI badge when connected.
+ * @returns {JSX.Element} Diagram card with optional disconnected warning.
+ */
 export default function PipelineDiagram({ incidents, aemEnabled, messagesRetrieved }: PipelineDiagramProps) {
   const counts = computeNodeCounts(incidents);
 

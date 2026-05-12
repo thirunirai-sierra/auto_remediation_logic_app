@@ -1,8 +1,18 @@
+/**
+ * @fileoverview Live Event Mesh log UI: client-built `LogEntry` rows with iFlow filter, expand/collapse, and clear.
+ */
 import { useEffect, useRef, useState } from "react";
 import SvgIcon from "../../../components/icons/SvgIcon";
 import styles from "../EventMeshFlow.module.css";
 import { STAGE_CFG, type LogEntry } from "./shared";
 
+/**
+ * Scrollable list of pipeline events with optional detail drawer per row.
+ * @param {object} props - Component props.
+ * @param {LogEntry[]} props.entries - Newest-first log lines (managed in `EventMeshFlow`).
+ * @param {() => void} props.onClear - Clears all entries in parent state.
+ * @returns {JSX.Element} Log card with filter input and scroll region.
+ */
 export default function EventLog({ entries, onClear }: { entries: LogEntry[]; onClear: () => void }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [filterText, setFilter] = useState("");

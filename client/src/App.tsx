@@ -1,3 +1,6 @@
+/**
+ * @fileoverview Application shell routing: lazy feature pages under `ShellLayout`; `/` redirects to `/dashboard`.
+ */
 import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import ShellLayout from "./components/layout/shell-layout.tsx";
@@ -9,6 +12,10 @@ const MigrationWizard = lazy(() => import("./pages/migration-wizard/migration-wi
 const PipoList = lazy(() => import("./pages/pipo-list/pipo-list.tsx"));
 const Pipeline = lazy(() => import("./pages/pipeline/pipeline.tsx"));
 
+/**
+ * Root React tree for authenticated area: routes + suspense fallback.
+ * @returns {JSX.Element} `ShellLayout` wrapping `Routes`.
+ */
 export default function App() {
   return (
     <ShellLayout>

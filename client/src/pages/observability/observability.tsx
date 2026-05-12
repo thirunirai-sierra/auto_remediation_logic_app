@@ -1,3 +1,7 @@
+/**
+ * @fileoverview Observability workspace: monitor message list/detail (HANA-backed APIs), AI analyze/explain/fix flows,
+ * tickets and approvals stubs, Error Type Guide, and Event Mesh sub-view (`EventMeshFlow`).
+ */
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import SvgIcon from "../../components/icons/SvgIcon.tsx";
@@ -506,9 +510,13 @@ function ErrorExplanationCard({ exp }: { exp: IErrorExplanation }) {
 }
 
 // ============================================================================
-// Main Observability component
+// Main Observability component (messages, tickets, approvals, Event Mesh)
 // ============================================================================
 
+/**
+ * Root page state: tabs, filters, selected message, detail + AI/fix flows, and child `EventMeshFlow` when on Event Mesh tab.
+ * @returns {JSX.Element} Full observability page layout.
+ */
 export default function Observability() {
   const [mainTab, setMainTab] = useState<MainTabKey>("errortypeguide");
   const [filters, setFilters] = useState<IFilterState>(INITIAL_FILTERS);

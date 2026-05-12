@@ -1,3 +1,6 @@
+/**
+ * @fileoverview Horizontal wizard stepper: Upload → Configuration → Preview labels with done/active/pending styling.
+ */
 import styles from "./migration-wizard.module.css";
 
 type WizardStep = "upload" | "config" | "preview";
@@ -8,6 +11,12 @@ const STEPS: { key: WizardStep; label: string }[] = [
   { key: "preview", label: "Preview" },
 ];
 
+/**
+ * Renders numbered steps and connectors; highlights current step from parent state.
+ * @param {object} props - Component props.
+ * @param {WizardStep} props.step - Current wizard step key from `MigrationWizard`.
+ * @returns {JSX.Element} Step indicator row.
+ */
 export default function MigrationSteps({ step }: { step: WizardStep }) {
   const currentIdx = STEPS.findIndex((s) => s.key === step);
   return (
@@ -32,4 +41,3 @@ export default function MigrationSteps({ step }: { step: WizardStep }) {
     </div>
   );
 }
-

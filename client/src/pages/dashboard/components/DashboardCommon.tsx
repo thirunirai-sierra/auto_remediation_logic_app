@@ -1,7 +1,17 @@
+/**
+ * @fileoverview Shared dashboard presentation: chart colors, date formatting, status badges,
+ * KPI tiles, Recharts legend helper, and skeleton loaders for `OverviewTab`.
+ */
 import styles from "../dashboard.module.css";
 
+/** Default slice colors for Recharts pie/bar series (cycled by index). */
 export const CHART_COLORS = ["#ff6b6b", "#4dabf7", "#ffd43b", "#69db7c", "#845ef7", "#f06595", "#74c0fc"];
 
+/**
+ * Formats an ISO (or ISO-like) timestamp for dashboard tables.
+ * @param {string | null | undefined} value - Instant from API; empty becomes `"-"`.
+ * @returns {string} Locale string (`en-GB`) or original `value` if the date is invalid.
+ */
 export function formatISODate(value: string | null | undefined): string {
   if (!value) return "-";
   const d = new Date(value);
@@ -12,6 +22,7 @@ export function formatISODate(value: string | null | undefined): string {
   });
 }
 
+/** Maps coarse incident status keys to CSS module class names for the active-incidents table. */
 export const INCIDENT_STATE: Record<string, string> = {
   RCA_COMPLETE: styles.stateSuccess,
   IN_PROGRESS: styles.stateWarning,
@@ -35,6 +46,12 @@ const STATUS_BADGE_STYLES: Record<string, { bg: string; color: string; dot: stri
   PENDING: { bg: "#f1f5f9", color: "#64748b", dot: "#94a3b8", label: "Pending" },
 };
 
+/**
+ * Pill badge for recent-failures table rows: maps API status to colors and human label.
+ * @param {object} props - Component props.
+ * @param {string} props.status - Status string from API (spaces → underscores for lookup).
+ * @returns {JSX.Element} Styled pill or fallback error-styled raw text if unknown status.
+ */
 export function StatusBadge({ status }: { status: string }) {
   const key = status.toUpperCase().replace(/ /g, "_");
   const style = STATUS_BADGE_STYLES[key];
@@ -47,6 +64,19 @@ export function StatusBadge({ status }: { status: string }) {
   );
 }
 
+/**
+ * Single KPI metric card with optional subheader, unit, trend arrow, and tooltip.
+ * @param {object} props - Component props.
+ * @param {string} props.header - Primary label shown at top of card.
+ * @param {string} [props.subheader] - Secondary line under header.
+ * @param {unknown} props.value - Main numeric or textual value (coerced with `String`).
+ * @param {string} [props.unit] - Suffix after value (e.g. `%`, `Min`).
+ * @param {"Up" | "Down"} [props.indicator] - Optional trend arrow appended to value.
+ * @param {"Good" | "Critical"} [props.valueColor] - Drives success vs danger text styling.
+ * @param {string} [props.tooltip] - If set, exposed as `data-tip` for shell tooltips.
+ * @param {string} [props.icon] - Optional emoji/symbol in card header.
+ * @returns {JSX.Element} KPI card markup.
+ */
 export function KpiCard({ header, subheader, value, unit, indicator, valueColor, tooltip, icon }: {
   header: string; subheader?: string; value: unknown; unit?: string; indicator?: "Up" | "Down"; valueColor?: "Good" | "Critical"; tooltip?: string; icon?: string;
 }) {
@@ -61,6 +91,14 @@ export function KpiCard({ header, subheader, value, unit, indicator, valueColor,
   );
 }
 
+/**
+ * Split KPI: shows FIX FAILED vs AUTO FIXED side by side in one card.
+ * @param {object} props - Component props.
+ * @param {unknown} props.fixFailed - Count or label for failed fixes column.
+ * @param {unknown} props.autoFixed - Count or label for auto-fixed column.
+ * @param {string} [props.tooltip] - Optional `data-tip` for the whole card.
+ * @returns {JSX.Element} Two-column KPI card.
+ */
 export function SplitKpiCard({ fixFailed, autoFixed, tooltip }: { fixFailed: unknown; autoFixed: unknown; tooltip?: string }) {
   return (
     <div className={`${styles.kpiCard} ${styles.kpiCardSplit}`} {...(tooltip ? { "data-tip": tooltip } : {})}>
@@ -77,10 +115,22 @@ export function SplitKpiCard({ fixFailed, autoFixed, tooltip }: { fixFailed: unk
   );
 }
 
+/**
+ * Section heading for chart/table blocks on the overview page.
+ * @param {object} props - Component props.
+ * @param {string} props.title - Visible section title.
+ * @returns {JSX.Element} Styled `h3`.
+ */
 export function SectionTitle({ title }: { title: string }) {
   return <h3 className={styles.sectionTitle}>{title}</h3>;
 }
 
+/**
+ * Custom Recharts legend: two-column grid of color swatch + label (scrollable).
+ * @param {object} props - Component props.
+ * @param {Array<{ value: string; color: string }>} [props.payload] - Legend entries from Recharts; omit or empty yields `null`.
+ * @returns {JSX.Element | null} Legend grid or nothing.
+ */
 export function TwoColumnLegend({ payload }: { payload?: Array<{ value: string; color: string }> }) {
   if (!payload?.length) return null;
   return (
@@ -95,10 +145,21 @@ export function TwoColumnLegend({ payload }: { payload?: Array<{ value: string; 
   );
 }
 
+/**
+ * Placeholder block while chart data is loading.
+ * @returns {JSX.Element} Skeleton div sized for chart area.
+ */
 export function SkeletonChart() {
   return <div className={`${styles.skeleton} ${styles.skeletonChart}`} />;
 }
 
+/**
+ * Table body placeholder: repeated skeleton rows for loading state.
+ * @param {object} [props] - Optional props.
+ * @param {number} [props.count=5] - Number of skeleton rows.
+ * @param {number} [props.colSpan=9] - `<td colSpan>` for each row.
+ * @returns {JSX.Element} Fragment of `<tr>` skeleton rows.
+ */
 export function SkeletonRows({ count = 5, colSpan = 9 }: { count?: number; colSpan?: number }) {
   return (
     <>

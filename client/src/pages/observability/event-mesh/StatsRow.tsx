@@ -1,8 +1,19 @@
+/**
+ * @fileoverview Event Mesh summary strip: KPI cards from AEM status plus derived counts from incidents; MCP tools popover.
+ */
 import { useEffect, useRef, useState } from "react";
 import type { AemStatusResponse, McpToolsStatus } from "../../../services/api";
 import styles from "../EventMeshFlow.module.css";
 import type { Incident } from "./shared";
 
+/**
+ * Renders stat cards and expandable MCP server/tool list.
+ * @param {object} props - Component props.
+ * @param {AemStatusResponse | null} props.aemStatus - Optional AEM counters from `fetchAemStatus`.
+ * @param {Incident[]} props.incidents - Used to derive fixed / in-progress / failed when AEM omits fields.
+ * @param {McpToolsStatus | null} props.mcpTools - MCP registry from `fetchMcpTools` for last card popover.
+ * @returns {JSX.Element} Row of stat cards plus MCP card.
+ */
 export default function StatsRow({
   aemStatus,
   incidents,

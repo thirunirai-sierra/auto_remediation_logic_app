@@ -1,3 +1,7 @@
+/**
+ * @fileoverview Azure Logic Apps dashboard page: loads logs overview + log incidents via React Query,
+ * maps API DTOs into `OverviewTab` props, and paginates two tables client-side.
+ */
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import {
@@ -9,7 +13,10 @@ import {
 import OverviewTab from "./components/OverviewTab";
 import styles from "./dashboard.module.css";
 
-// ── Main component ────────────────────────────────────────────────────────────
+/**
+ * Dashboard shell: overview tab with KPIs, charts, and tables wired to logging APIs.
+ * @returns {JSX.Element} Page layout and `OverviewTab` when overview tab is active.
+ */
 export default function Dashboard() {
   const chartOpts = { refetchInterval: 60_000, retry: 3, retryDelay: 3_000 } as const;
   const [activeTab, setActiveTab] = useState<"overview" | "tickets">("overview");

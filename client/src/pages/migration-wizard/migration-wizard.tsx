@@ -1,3 +1,7 @@
+/**
+ * @fileoverview CPI migration wizard: upload code/errors → configure iFlow name and issue type → POST multipart to `/query`
+ * via `uploadMigrationFiles` → side-by-side preview and download.
+ */
 import { useState, useRef } from "react";
 import { uploadMigrationFiles } from "../../services/api.ts";
 import type { IUploadedFile, FileSource } from "../../types/index.ts";
@@ -8,6 +12,10 @@ import styles from "./migration-wizard.module.css";
 
 type WizardStep = "upload" | "config" | "preview";
 
+/**
+ * Three-step wizard managing local file list and conversion result state.
+ * @returns {JSX.Element} Page with step indicator and current step panel.
+ */
 export default function MigrationWizard() {
   const [step, setStep]           = useState<WizardStep>("upload");
   const [files, setFiles]         = useState<IUploadedFile[]>([]);
@@ -22,6 +30,12 @@ export default function MigrationWizard() {
   const codeFileRef  = useRef<HTMLInputElement>(null);
   const errorFileRef = useRef<HTMLInputElement>(null);
 
+  /**
+   * Appends picked files to UI list and backing `Map` for FormData upload.
+   * @param {FileList | null} rawFiles - Browser file list from input or drop.
+   * @param {FileSource} source - `CODEFILE` or `ERROR` to tag the upload slot.
+   * @returns {void}
+   */
   function addFiles(rawFiles: FileList | null, source: FileSource) {
     if (!rawFiles || rawFiles.length === 0) return;
     const newEntries: IUploadedFile[] = [];
@@ -42,16 +56,31 @@ export default function MigrationWizard() {
     setFileMap(newMap);
   }
 
+  /**
+   * Removes one uploaded file from list and map by stable `fileId`.
+   * @param {string} fileId - Client-generated id from `addFiles`.
+   * @returns {void}
+   */
   function removeFile(fileId: string) {
     setFiles((prev) => prev.filter((f) => f.fileId !== fileId));
     setFileMap((prev) => { const m = new Map(prev); m.delete(fileId); return m; });
   }
 
+  /**
+   * Bridges drag-and-drop into `addFiles` for a given source bucket.
+   * @param {React.DragEvent<HTMLDivElement>} e - Drop event from `MigrationDropZone`.
+   * @param {FileSource} source - `CODEFILE` or `ERROR`.
+   * @returns {void}
+   */
   function handleDrop(e: React.DragEvent<HTMLDivElement>, source: FileSource) {
     e.preventDefault();
     addFiles(e.dataTransfer.files, source);
   }
 
+  /**
+   * Builds `FormData` from `fileMap` and calls `uploadMigrationFiles`; on success moves to preview step.
+   * @returns {Promise<void>}
+   */
   async function handleConvert() {
     if (files.length === 0) { setError("Please upload at least one file."); return; }
     setError("");
@@ -83,6 +112,10 @@ export default function MigrationWizard() {
     }
   }
 
+  /**
+   * Downloads converted text as `result.txt` in the browser.
+   * @returns {void}
+   */
   function handleDownloadResult() {
     if (!newCode.trim()) return;
     const blob = new Blob([newCode], { type: "text/plain;charset=utf-8" });
@@ -93,6 +126,10 @@ export default function MigrationWizard() {
     URL.revokeObjectURL(a.href);
   }
 
+  /**
+   * Clears wizard state and returns to the upload step.
+   * @returns {void}
+   */
   function handleReset() {
     setStep("upload"); setFiles([]); setFileMap(new Map());
     setIflowName(""); setIssueType("UDF"); setOldCode(""); setNewCode(""); setError("");
@@ -114,7 +151,10 @@ export default function MigrationWizard() {
     </div>
   );
 
-  // ── Step 1: Upload ──────────────────────────────────────────────────────────
+  /**
+   * Step 1 UI: drop zones, file list, next to configuration.
+   * @returns {JSX.Element}
+   */
   function renderUploadStep() {
     return (
       <>
@@ -177,7 +217,10 @@ export default function MigrationWizard() {
     );
   }
 
-  // ── Step 2: Config ──────────────────────────────────────────────────────────
+  /**
+   * Step 2 UI: iFlow name, issue type, convert button calling `handleConvert`.
+   * @returns {JSX.Element}
+   */
   function renderConfigStep() {
     return (
       <>
@@ -236,7 +279,10 @@ export default function MigrationWizard() {
     );
   }
 
-  // ── Step 3: Preview ─────────────────────────────────────────────────────────
+  /**
+   * Step 3 UI: optional original vs converted code and download/reset actions.
+   * @returns {JSX.Element}
+   */
   function renderPreviewStep() {
     return (
       <>

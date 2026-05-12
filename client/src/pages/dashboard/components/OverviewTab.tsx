@@ -1,3 +1,7 @@
+/**
+ * @fileoverview Dashboard overview tab: KPI row, Recharts (status, errors, top iflows, timeline),
+ * and two paginated tables (recent failed messages, active incidents). Presentation-only — parent owns queries and pagination.
+ */
 import {
   PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line,
@@ -23,8 +27,28 @@ type ActiveIncident = {
   created_at: unknown; last_seen: unknown; occurrence_count: unknown; rca_confidence: unknown;
 };
 
-export default function OverviewTab(props: {
-  dashLoading: boolean;
+/**
+ * Renders the main dashboard overview content passed from `Dashboard`.
+ * @param {object} props - KPI, chart series, table rows, loading flags, pagination, and callbacks.
+ * @param {boolean} props.dashLoading - When true, KPI row and charts show skeletons.
+ * @param {Record<string, unknown>} props.kpi - KPI fields consumed by `KpiCard` / `SplitKpiCard`.
+ * @param {Array<{ status: string; count: number }>} props.statusData - Pie chart data for status breakdown.
+ * @param {Array<{ error_type: string; count: number }>} props.errorData - Pie chart data for error distribution.
+ * @param {Array<{ iflow_name: string; failure_count: number }>} props.iflowData - Horizontal bar chart rows.
+ * @param {Array<{ time: string; count: number }>} props.timelineData - Line chart points over time.
+ * @param {RecentFail[]} props.recentFails - Current page of recent failure rows.
+ * @param {ActiveIncident[]} props.activeInc - Current page of active incident rows.
+ * @param {boolean} props.incidentsError - True when log-incidents query failed.
+ * @param {string} props.incidentsErrorMessage - Error text for incidents table banner.
+ * @param {() => void} props.onFailuresPrev - Previous page for failures table.
+ * @param {() => void} props.onFailuresNext - Next page for failures table.
+ * @param {(s: number) => void} props.onFailuresPageSizeChange - Change page size for failures table.
+ * @param {() => void} props.onIncidentsPrev - Previous page for incidents table.
+ * @param {() => void} props.onIncidentsNext - Next page for incidents table.
+ * @param {(s: number) => void} props.onIncidentsPageSizeChange - Change page size for incidents table.
+ * @returns {JSX.Element} Fragment containing KPIs, charts, and tables.
+ */
+export default function OverviewTab(props: {  dashLoading: boolean;
   kpi: Record<string, unknown>;
   statusData: { status: string; count: number }[];
   errorData: { error_type: string; count: number }[];
