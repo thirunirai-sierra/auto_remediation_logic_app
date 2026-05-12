@@ -140,7 +140,7 @@ export default function Orchestrator() {
             Hi {user.firstname}, how can I help?
           </h2>
           <p className={styles.welcomeHint}>
-            Ask me anything about SAP Integration Suite — creating iFlows,
+            Ask me anything about Azure Logic Apps — creating iFlows,
             mapping messages, running tests, or monitoring errors.
           </p>
           <div className={styles.quickPrompts}>

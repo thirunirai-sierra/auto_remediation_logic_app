@@ -49,6 +49,14 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+OBSERVABILITY_ROUTER_AVAILABLE = False
+try:
+    from observability_routes import router as observability_router
+    OBSERVABILITY_ROUTER_AVAILABLE = True
+except Exception as e:
+    logger = logging.getLogger(__name__)
+    logger.warning("Observability router not available: %s", e)
+
 # Setup logging before optional imports that may log
 logging.basicConfig(
     level=logging.INFO,
@@ -355,6 +363,8 @@ class RemediationAPI:
         
         # Register routes
         self._register_routes(app)
+        if OBSERVABILITY_ROUTER_AVAILABLE:
+            app.include_router(observability_router)
         
         return app
     
@@ -396,7 +406,8 @@ class RemediationAPI:
                         COALESCE(STATUS, 'FAILED'),
                         COALESCE(CREATED_AT, UPDATED_AT)
                     FROM "{table}"
-                    WHERE UPPER(COALESCE(STATUS, '')) IN ('FAILED', 'ERROR', 'IN_PROGRESS', 'PENDING', 'AUTO_FIXED', 'FIX_VERIFIED', 'HUMAN_FIXED')
+                    WHERE ERROR_MESSAGE IS NOT NULL
+                      AND UPPER(COALESCE(STATUS, '')) NOT IN ('IGNORED', 'RESOLVED')
                     ORDER BY COALESCE(UPDATED_AT, CREATED_AT) DESC
                     """
                 )
@@ -429,16 +440,23 @@ class RemediationAPI:
 
                 cur.execute(f'SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM "{table}"')
                 total_flows = int(cur.fetchone()[0] or 0)
-                cur.execute(f'SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM "{table}" WHERE UPPER(COALESCE(STATUS, \'\')) IN (\'FAILED\', \'ERROR\')')
+                cur.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT WORKFLOW_NAME)
+                    FROM "{table}"
+                    WHERE ERROR_MESSAGE IS NOT NULL
+                      AND UPPER(COALESCE(TO_NVARCHAR(STATUS), '')) NOT IN ('IGNORED', 'RESOLVED')
+                    """
+                )
                 error_flows = int(cur.fetchone()[0] or 0)
                 cur.execute(f'SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM "{table}" WHERE AUTO_FIX_SUCCESS = TRUE')
                 fixed_flows = int(cur.fetchone()[0] or 0)
 
                 cur.execute(
                     f"""
-                    SELECT COALESCE(STATUS, 'UNKNOWN') AS S, COUNT(*)
+                    SELECT COALESCE(TO_NVARCHAR(STATUS), 'UNKNOWN') AS S, COUNT(*)
                     FROM "{table}"
-                    GROUP BY COALESCE(STATUS, 'UNKNOWN')
+                    GROUP BY COALESCE(TO_NVARCHAR(STATUS), 'UNKNOWN')
                     ORDER BY COUNT(*) DESC
                     """
                 )
@@ -446,9 +464,9 @@ class RemediationAPI:
 
                 cur.execute(
                     f"""
-                    SELECT COALESCE(ERROR_CATEGORY, ERROR_CODE, 'UNKNOWN') AS E, COUNT(*)
+                    SELECT COALESCE(TO_NVARCHAR(ERROR_CATEGORY), TO_NVARCHAR(ERROR_CODE), 'UNKNOWN') AS E, COUNT(*)
                     FROM "{table}"
-                    GROUP BY COALESCE(ERROR_CATEGORY, ERROR_CODE, 'UNKNOWN')
+                    GROUP BY COALESCE(TO_NVARCHAR(ERROR_CATEGORY), TO_NVARCHAR(ERROR_CODE), 'UNKNOWN')
                     ORDER BY COUNT(*) DESC
                     """
                 )
@@ -458,7 +476,8 @@ class RemediationAPI:
                     f"""
                     SELECT TOP 10 WORKFLOW_NAME, COUNT(*)
                     FROM "{table}"
-                    WHERE UPPER(COALESCE(STATUS, '')) IN ('FAILED', 'ERROR')
+                    WHERE ERROR_MESSAGE IS NOT NULL
+                      AND UPPER(COALESCE(TO_NVARCHAR(STATUS), '')) NOT IN ('IGNORED', 'RESOLVED')
                     GROUP BY WORKFLOW_NAME
                     ORDER BY COUNT(*) DESC
                     """
@@ -469,11 +488,11 @@ class RemediationAPI:
                     f"""
                     SELECT TOP {int(top)}
                         WORKFLOW_NAME,
-                        COALESCE(ERROR_CODE, ERROR_CATEGORY),
+                        COALESCE(TO_NVARCHAR(ERROR_CODE), TO_NVARCHAR(ERROR_CATEGORY)),
                         ERROR_MESSAGE,
                         COALESCE(UPDATED_AT, CREATED_AT),
                         NULL,
-                        COALESCE(STATUS, 'UNKNOWN'),
+                        COALESCE(TO_NVARCHAR(STATUS), 'UNKNOWN'),
                         INCIDENT_ID
                     FROM "{table}"
                     WHERE ERROR_MESSAGE IS NOT NULL
@@ -632,7 +651,7 @@ class RemediationAPI:
                 return _read_overview_from_hana(top)
             except Exception as ex:
                 raise HTTPException(status_code=500, detail=f"Failed to read overview from HANA: {ex}") from ex
-        
+
         @app.post("/remediate")
         async def remediate_all(background_tasks: BackgroundTasks):
             """Manually trigger remediation for all pending failed runs."""

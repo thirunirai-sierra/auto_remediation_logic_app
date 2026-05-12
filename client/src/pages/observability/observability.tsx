@@ -126,8 +126,13 @@ const STATUS_CONFIG: Record<string, StatusCfg> = {
   RETRIED:                         { ...GREEN,  label: "Retried" },
 };
 
+/** DB/API often returns spaced labels ("Ticket Created"); UI keys are SNAKE_CASE ("TICKET_CREATED"). */
+function normalizeStatusKey(status: string | undefined | null): string {
+  return (status ?? "").trim().toUpperCase().replace(/\s+/g, "_");
+}
+
 function StatusPill({ status }: { status: string }) {
-  const key = (status || "").toUpperCase();
+  const key = normalizeStatusKey(status);
   const cfg = STATUS_CONFIG[key] ?? { ...GREY, label: status || "Unknown" };
   return (
     <span className={styles.statusPill} style={{ color: cfg.color, background: cfg.bg }}>
@@ -584,13 +589,13 @@ export default function Observability() {
   const STATUS_GROUP: Record<string, string[]> = {
     FAILED:     ["FAILED", "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME", "RCA_FAILED", "PIPELINE_ERROR", "DETECTED", "ARTIFACT_MISSING"],
     SUCCESS:    ["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "SUCCESS", "HUMAN_INITIATED_FIX", "FIX_DEPLOYED"],
-    PROCESSING: ["RCA_IN_PROGRESS", "FIX_IN_PROGRESS", "CLASSIFIED", "RCA_COMPLETE", "FIX_APPLIED_PENDING_VERIFICATION", "PROCESSING"],
+    PROCESSING: ["RCA_IN_PROGRESS", "FIX_IN_PROGRESS", "FIX_ATTEMPTED", "CLASSIFIED", "RCA_COMPLETE", "FIX_APPLIED_PENDING_VERIFICATION", "PROCESSING"],
     RETRY:      ["RETRY", "PENDING_APPROVAL", "TICKET_CREATED", "AWAITING_APPROVAL"],
   };
 
   const messages = useMemo(() => {
     return ((data?.messages || []) as IMonitorMessage[]).filter((m) => {
-      const s = (m.status || "").toUpperCase();
+      const s = normalizeStatusKey(m.status);
       if (filters.statuses.length) {
         const allowed = filters.statuses.flatMap((g) => STATUS_GROUP[g] || [g]);
         if (!allowed.includes(s)) return false;
@@ -609,14 +614,24 @@ export default function Observability() {
   }, [data, filters]);
 
   const counts = useMemo(() => {
+    const s = data?.summary as { FAILED?: number; SUCCESS?: number; PROCESSING?: number; RETRY?: number } | undefined;
+    if (
+      s &&
+      typeof s.FAILED === "number" &&
+      typeof s.SUCCESS === "number" &&
+      typeof s.PROCESSING === "number" &&
+      typeof s.RETRY === "number"
+    ) {
+      return { FAILED: s.FAILED, SUCCESS: s.SUCCESS, PROCESSING: s.PROCESSING, RETRY: s.RETRY };
+    }
     const all = (data?.messages || []) as IMonitorMessage[];
     const result: Record<string, number> = { FAILED: 0, SUCCESS: 0, PROCESSING: 0, RETRY: 0 };
     all.forEach((m) => {
-      const s = (m.status || "").toUpperCase();
-      if (["FAILED", "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME", "RCA_FAILED", "PIPELINE_ERROR", "DETECTED", "ARTIFACT_MISSING"].includes(s)) result.FAILED++;
-      else if (["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "SUCCESS", "HUMAN_INITIATED_FIX", "FIX_DEPLOYED"].includes(s)) result.SUCCESS++;
-      else if (["RCA_IN_PROGRESS", "FIX_IN_PROGRESS", "CLASSIFIED", "RCA_COMPLETE", "FIX_APPLIED_PENDING_VERIFICATION"].includes(s)) result.PROCESSING++;
-      else if (["RETRY", "PENDING_APPROVAL", "TICKET_CREATED", "AWAITING_APPROVAL"].includes(s)) result.RETRY++;
+      const st = normalizeStatusKey(m.status);
+      if (["FAILED", "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME", "RCA_FAILED", "PIPELINE_ERROR", "DETECTED", "ARTIFACT_MISSING"].includes(st)) result.FAILED++;
+      else if (["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "SUCCESS", "HUMAN_INITIATED_FIX", "FIX_DEPLOYED"].includes(st)) result.SUCCESS++;
+      else if (["RCA_IN_PROGRESS", "FIX_IN_PROGRESS", "FIX_ATTEMPTED", "CLASSIFIED", "RCA_COMPLETE", "FIX_APPLIED_PENDING_VERIFICATION", "PROCESSING"].includes(st)) result.PROCESSING++;
+      else if (["RETRY", "PENDING_APPROVAL", "TICKET_CREATED", "AWAITING_APPROVAL"].includes(st)) result.RETRY++;
     });
     return result;
   }, [data]);
@@ -728,7 +743,7 @@ export default function Observability() {
       }
 
       // Restore fix outcome state from incident status
-      const incStatus = (d.incident_status || "").toUpperCase();
+      const incStatus = normalizeStatusKey(d.incident_status);
       if (incStatus === "HUMAN_INITIATED_FIX") {
         setFixState("skipped");
         setFixResult(d.ai_recommendation?.fix_summary || "iFlow was already running — no changes were applied.");
@@ -808,7 +823,7 @@ export default function Observability() {
       await new Promise((r) => setTimeout(r, 5000));
       try {
         const s = await fetchFixStatus(incidentId) as Record<string, unknown>;
-        const st = (s.status as string || "").toUpperCase();
+        const st = normalizeStatusKey(s.status as string);
 
         // Update the live step progress from the backend
         setFixProgress({
@@ -867,7 +882,7 @@ export default function Observability() {
       const result = await applyMessageFix(selectedGuid, "user", proposedFix, isForce) as Record<string, unknown>;
       const incidentId = (result.incident_id as string) || detail?.incident_id || "";
 
-      const syncStatus = (result.status as string || "").toUpperCase();
+      const syncStatus = normalizeStatusKey(result.status as string);
       const syncFixApplied = result.fix_applied === true;
       const syncDeploy = result.deploy_success === true;
 
@@ -935,16 +950,17 @@ export default function Observability() {
   /* ── Auto-resume fix state from DB on message select ───────────────── */
   useEffect(() => {
     if (!detail) return;
-    const st = (detail.status || "").toUpperCase();
+    const st = normalizeStatusKey(detail.status);
     const incidentId = detail.incident_id || "";
 
     // Only auto-restore if the user hasn't manually triggered anything this session
     if (fixState !== "idle") return;
 
-    if (["FIX_IN_PROGRESS", "RCA_IN_PROGRESS", "FIX_APPLIED_PENDING_VERIFICATION"].includes(st)) {
+    if (["FIX_IN_PROGRESS", "RCA_IN_PROGRESS", "FIX_APPLIED_PENDING_VERIFICATION", "FIX_ATTEMPTED", "PROCESSING"].includes(st)) {
       const stepLabel =
         st === "RCA_IN_PROGRESS"                   ? "Analyzing root cause…" :
         st === "FIX_APPLIED_PENDING_VERIFICATION"  ? "Verifying fix…" :
+        st === "FIX_ATTEMPTED"                     ? "Fix attempt in progress…" :
                                                      "Fix in progress…";
       setFixState("loading");
       setFixProgress({ currentStep: stepLabel, stepIndex: 0, totalSteps: 5, stepsDone: [] });
@@ -1111,20 +1127,38 @@ export default function Observability() {
               ) : (
                 <div className={styles.messageList}>
                   {messages.map((msg, i) => {
-                    const cfg = STATUS_CONFIG[msg.status?.toUpperCase()] ?? STATUS_CONFIG.FAILED;
+                    const cfg = STATUS_CONFIG[normalizeStatusKey(msg.status)] ?? STATUS_CONFIG.FAILED;
                     const isSelected = selectedGuid !== null && selectedGuid === msg.message_guid;
                     return (
                       <div
                         key={msg.message_guid || i}
                         className={`${styles.messageRow} ${isSelected ? styles.messageRowSelected : ""}`}
                         style={{ borderLeft: `3px solid ${isSelected ? cfg.dot : "transparent"}` }}
-                        onClick={() => handleSelect(msg)}
                       >
-                        <div className={styles.messageMain}>
-                          <span className={styles.messageName}>
-                            {msg.iflow_display || msg.title || "Unknown"}
-                          </span>
-                          <StatusPill status={msg.status} />
+                        <div className={styles.messageHeader}>
+                          <div className={styles.messageMain}>
+                            <span className={styles.messageName}>
+                              {msg.iflow_display || msg.title || "Unknown"}
+                            </span>
+                            <StatusPill status={msg.status} />
+                          </div>
+                          <button
+                            type="button"
+                            className={styles.messageOpenBtn}
+                            onClick={() => {
+                              if (isSelected) {
+                                setSelectedGuid(null);
+                                setSelectedMsg(null);
+                                setDetail(null);
+                                return;
+                              }
+                              handleSelect(msg);
+                            }}
+                            aria-label={`Open details for ${msg.iflow_display || msg.title || msg.message_guid || "message"}`}
+                            title={isSelected ? "Close details" : "Open details"}
+                          >
+                            <SvgIcon name="chevron-right" size={16} />
+                          </button>
                         </div>
                         <div className={styles.messageMeta}>
                           <span className={styles.metaItem}>{msg.log_start || msg.updatedAt || "--"}</span>

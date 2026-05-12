@@ -2,15 +2,11 @@ import { useState, useRef } from "react";
 import { uploadMigrationFiles } from "../../services/api.ts";
 import type { IUploadedFile, FileSource } from "../../types/index.ts";
 import SvgIcon from "../../components/icons/SvgIcon.tsx";
+import MigrationDropZone from "./MigrationDropZone";
+import MigrationSteps from "./MigrationSteps";
 import styles from "./migration-wizard.module.css";
 
 type WizardStep = "upload" | "config" | "preview";
-
-const STEPS: { key: WizardStep; label: string }[] = [
-  { key: "upload", label: "Upload Files" },
-  { key: "config", label: "Configuration" },
-  { key: "preview", label: "Preview" },
-];
 
 export default function MigrationWizard() {
   const [step, setStep]           = useState<WizardStep>("upload");
@@ -102,42 +98,12 @@ export default function MigrationWizard() {
     setIflowName(""); setIssueType("UDF"); setOldCode(""); setNewCode(""); setError("");
   }
 
-  const currentIdx = STEPS.findIndex((s) => s.key === step);
-
   return (
     <div className={styles.page}>
       <h1 className={styles.pageTitle}>Migration Wizard</h1>
 
       {/* ── Step indicator ── */}
-      <div className={styles.stepIndicator}>
-        {STEPS.map((s, i) => {
-          const isDone   = i < currentIdx;
-          const isActive = i === currentIdx;
-          return (
-            <div key={s.key} className={styles.stepItem}>
-              <div className={styles.stepContent}>
-                <div
-                  className={`${styles.stepNum} ${
-                    isDone ? styles.stepNumDone : isActive ? styles.stepNumActive : styles.stepNumPending
-                  }`}
-                >
-                  {isDone ? "✓" : i + 1}
-                </div>
-                <span
-                  className={`${styles.stepLabel} ${
-                    isActive ? styles.stepLabelActive : isDone ? styles.stepLabelDone : ""
-                  }`}
-                >
-                  {s.label}
-                </span>
-              </div>
-              {i < STEPS.length - 1 && (
-                <div className={`${styles.stepLine} ${isDone ? styles.stepLineDone : ""}`} />
-              )}
-            </div>
-          );
-        })}
-      </div>
+      <MigrationSteps step={step} />
 
       {/* ── Step card ── */}
       <div className={styles.card}>
@@ -156,7 +122,7 @@ export default function MigrationWizard() {
         <p className={styles.stepDesc}>Upload your source code and/or error screenshot files.</p>
 
         <div className={styles.uploaderGrid}>
-          <DropZone
+          <MigrationDropZone
             label="Source Code File"
             source="CODEFILE"
             onDrop={(e) => handleDrop(e, "CODEFILE")}
@@ -165,7 +131,7 @@ export default function MigrationWizard() {
           <input ref={codeFileRef} type="file" multiple hidden
             onChange={(e) => { addFiles(e.target.files, "CODEFILE"); e.target.value = ""; }} />
 
-          <DropZone
+          <MigrationDropZone
             label="Error Screenshot"
             source="ERROR"
             onDrop={(e) => handleDrop(e, "ERROR")}
@@ -305,32 +271,3 @@ export default function MigrationWizard() {
   }
 }
 
-// ── Drop Zone ────────────────────────────────────────────────────────────────
-interface DropZoneProps {
-  label:    string;
-  source:   FileSource;
-  onDrop:   (e: React.DragEvent<HTMLDivElement>) => void;
-  onBrowse: () => void;
-}
-
-function DropZone({ label, source, onDrop, onBrowse }: DropZoneProps) {
-  const [hovering, setHovering] = useState(false);
-  const isCode = source === "CODEFILE";
-
-  return (
-    <div
-      className={`${styles.dropZone} ${hovering ? styles.dropZoneHover : ""}`}
-      onDragOver={(e) => { e.preventDefault(); setHovering(true); }}
-      onDragLeave={() => setHovering(false)}
-      onDrop={(e) => { setHovering(false); onDrop(e); }}
-    >
-      <span className={styles.dropIcon}><SvgIcon name={isCode ? "folder" : "image"} size={28} /></span>
-      <span className={styles.dropLabel}>{label}</span>
-      <span className={`${styles.dropType} ${isCode ? styles.dropTypeCode : styles.dropTypeError}`}>
-        {isCode ? "Code File" : "Error / Screenshot"}
-      </span>
-      <span className={styles.dropHint}>Drag & drop files here, or</span>
-      <button className={styles.browseBtn} onClick={onBrowse} type="button">Browse Files</button>
-    </div>
-  );
-}

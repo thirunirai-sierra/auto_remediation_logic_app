@@ -79,44 +79,55 @@ export async function sendChatMessage(
   return postForm(`${API_BASE}/query`, formData);
 }
 
-export async function fetchMonitorMessages(): Promise<{ messages: unknown[] }> {
-  return request(`${API_BASE}/smart-monitoring/messages`);
+export type MonitorMessagesSummary = {
+  FAILED: number;
+  SUCCESS: number;
+  PROCESSING: number;
+  RETRY: number;
+};
+
+export async function fetchMonitorMessages(): Promise<{
+  messages: unknown[];
+  total?: number;
+  summary?: MonitorMessagesSummary;
+}> {
+  return request(`${LOG_API_BASE}/api/monitor/messages`);
 }
 
 export async function fetchMonitorMessageDetail(guid: string): Promise<unknown> {
-  return request(`${API_BASE}/smart-monitoring/messages/${guid}`);
+  return request(`${LOG_API_BASE}/api/monitor/message/${guid}`);
 }
 
 export async function analyzeMessage(guid: string, userId = "user"): Promise<unknown> {
-  return request(`${API_BASE}/smart-monitoring/messages/${guid}/analyze`, {
+  return request(`${LOG_API_BASE}/api/monitor/analyze/${guid}`, {
     method: "POST",
     body: JSON.stringify({ user_id: userId }),
   });
 }
 
 export async function explainError(guid: string, userId = "user"): Promise<unknown> {
-  return request(`${API_BASE}/smart-monitoring/messages/${guid}/explain_error`, {
+  return request(`${LOG_API_BASE}/api/monitor/explain/${guid}`, {
     method: "POST",
     body: JSON.stringify({ user_id: userId }),
   });
 }
 
 export async function generateFixPatch(guid: string, userId = "user"): Promise<unknown> {
-  return request(`${API_BASE}/smart-monitoring/messages/${guid}/generate_fix_patch`, {
+  return request(`${LOG_API_BASE}/api/monitor/generate-fix/${guid}`, {
     method: "POST",
     body: JSON.stringify({ user_id: userId }),
   });
 }
 
 export async function applyMessageFix(guid: string, userId = "user", proposedFix?: string, force = false): Promise<unknown> {
-  return request(`${API_BASE}/smart-monitoring/messages/${guid}/apply_fix${force ? "?force=true" : ""}`, {
+  return request(`${LOG_API_BASE}/api/monitor/apply-fix/${guid}${force ? "?force=true" : ""}`, {
     method: "POST",
-    body: JSON.stringify({ user_id: userId, proposed_fix: proposedFix }),
+    body: JSON.stringify({ trigger_type: userId, proposed_fix: proposedFix, force }),
   });
 }
 
 export async function fetchFixStatus(incidentId: string): Promise<unknown> {
-  return request(`${API_BASE}/smart-monitoring/incidents/${incidentId}/fix_status`);
+  return request(`${LOG_API_BASE}/api/monitor/fix-status/${incidentId}`);
 }
 
 export async function smartMonitoringChat(
@@ -289,21 +300,21 @@ export async function searchKnowledge(
 }
 
 export async function fetchTickets(): Promise<{ tickets: unknown[] }> {
-  return request(`${API_BASE}/autonomous/tickets`);
+  return request(`${LOG_API_BASE}/api/tickets`);
 }
 
 export async function updateTicket(
   ticketId: string,
   updates: { status?: string; assigned_to?: string | null; resolution_notes?: string | null }
 ): Promise<{ ticket: unknown }> {
-  return request(`${API_BASE}/autonomous/tickets/${encodeURIComponent(ticketId)}`, {
-    method: "PATCH",
+  return request(`${LOG_API_BASE}/api/tickets/${encodeURIComponent(ticketId)}/update`, {
+    method: "POST",
     body: JSON.stringify(updates),
   });
 }
 
 export async function fetchPendingApprovals(): Promise<{ pending: unknown[] }> {
-  return request(`${API_BASE}/autonomous/pending_approvals`);
+  return request(`${LOG_API_BASE}/api/approvals/pending`);
 }
 
 export async function approveIncident(
@@ -311,7 +322,7 @@ export async function approveIncident(
   approved: boolean,
   comment = ""
 ): Promise<unknown> {
-  return request(`${API_BASE}/autonomous/incidents/${incidentId}/approve`, {
+  return request(`${LOG_API_BASE}/api/approvals/${incidentId}/approve`, {
     method: "POST",
     body: JSON.stringify({ approved, comment }),
   });
@@ -385,19 +396,15 @@ export interface AemStatusResponse {
 }
 
 export async function fetchAemStatus(): Promise<AemStatusResponse | null> {
-  return requestMaybe<AemStatusResponse>(`${API_BASE}/aem/status`);
+  return requestMaybe<AemStatusResponse>(`${LOG_API_BASE}/api/aem/status`);
 }
 
 export async function fetchAemIncidents(
   limit = 100
 ): Promise<{ incidents: Record<string, unknown>[] }> {
-  const data = await request<{ incidents?: unknown[] }>(
-    `${API_BASE}/autonomous/incidents?limit=${limit}`
-  );
+  const data = await request<{ incidents?: unknown[] }>(`${LOG_API_BASE}/api/aem/incidents?limit=${limit}`);
   return {
-    incidents: ((data.incidents ?? []) as Record<string, unknown>[]).map(
-      normalizeIncidentForUi
-    ),
+    incidents: ((data.incidents ?? []) as Record<string, unknown>[]).map(normalizeIncidentForUi),
   };
 }
 
@@ -471,8 +478,8 @@ export interface LogsOverviewResponse {
   }>;
 }
 
-export async function fetchLogsOverview(hours = 24, top = 1000): Promise<LogsOverviewResponse> {
-  const params = new URLSearchParams({ hours: String(hours), top: String(top) });
+export async function fetchLogsOverview(top = 1000): Promise<LogsOverviewResponse> {
+  const params = new URLSearchParams({ top: String(top) });
   return request<LogsOverviewResponse>(`${LOG_API_BASE}/logs/overview?${params}`);
 }
 
