@@ -25,13 +25,13 @@ else:
 
 
 def query_log_analytics_range(start: datetime, end: datetime) -> list:
-    """Query Azure Log Analytics for failed Logic App runs."""
+    """Query Azure Log Analytics for failed Logic App runs (timezone‑aware)."""
     # Ensure datetimes are timezone-aware (UTC)
     if start.tzinfo is None:
         start = start.replace(tzinfo=timezone.utc)
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
-    
+
     cred = ClientSecretCredential(
         tenant_id=settings.AZURE_TENANT_ID,
         client_id=settings.AZURE_CLIENT_ID,
@@ -49,7 +49,8 @@ def query_log_analytics_range(start: datetime, end: datetime) -> list:
         resource_runId_s,
         resource_workflowName_s,
         error_code_s,
-        error_message_s
+        error_message_s,
+        _ResourceId
     """
     response = logs_client.query_workspace(
         workspace_id=settings.LOG_ANALYTICS_WORKSPACE_ID,
@@ -64,9 +65,11 @@ def query_log_analytics_range(start: datetime, end: datetime) -> list:
             "resource_runId_s": row[1],
             "resource_workflowName_s": row[2],
             "error_code_s": row[3],
-            "error_message_s": row[4] if len(row) > 4 else ""
+            "error_message_s": row[4] if len(row) > 4 else "",
+            "_ResourceId": row[5] if len(row) > 5 else "",
         })
     return results
+
 
 def categorize_error(error_message: str, error_code: str) -> str:
     """Basic error categorization for observability."""
@@ -100,6 +103,7 @@ def ingest_records(results: list, tracker) -> int:
         error_msg = run.get("error_message_s", "")
         error_code = run.get("error_code_s", "unknown")
         original_timestamp = run.get("TimeGenerated")
+        resource_id = run.get("_ResourceId", "")
 
         rec = tracker.get_run_record(run_id) if run_id else None
         if rec:
@@ -132,6 +136,15 @@ def ingest_records(results: list, tracker) -> int:
             "auto_fix_attempted": auto_attempted,
             "auto_fix_success": auto_success,
             "retry_count": retry_count,
+
+            # New fields for observability table
+            "log_start": original_timestamp.isoformat() if original_timestamp else None,
+            "last_seen": datetime.now().isoformat(),
+            "occurrence_count": 1,
+            "affected_component": None,   # will be filled by RCA later
+            "correlation_id": resource_id,
+            "source_type": "AzureDiagnostics",
+            "integration_flow_name": wf_name,
         })
 
     inserted, failed = hana_client.batch_upsert_observability(records)

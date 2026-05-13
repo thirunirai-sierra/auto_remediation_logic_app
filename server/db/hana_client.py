@@ -102,7 +102,7 @@ class HanaClient:
             exists = False
 
         if exists:
-            # Migrate missing columns
+            # Migrate missing columns – add all new columns if not present
             new_columns = [
                 ("AI_DIAGNOSIS", "NCLOB"),
                 ("AI_PROPOSED_FIX", "NCLOB"),
@@ -113,6 +113,41 @@ class HanaClient:
                 ("PROPERTIES_JSON", "NCLOB"),
                 ("ARTIFACT_JSON", "NCLOB"),
                 ("ERROR_DETAILS_JSON", "NCLOB"),
+                ("MESSAGE_GUID", "NVARCHAR(200)"),
+                ("IFLOW_ID", "NVARCHAR(500)"),
+                ("SENDER", "NVARCHAR(200)"),
+                ("RECEIVER", "NVARCHAR(200)"),
+                ("ROOT_CAUSE", "NCLOB MEMORY THRESHOLD 1000"),
+                ("PROPOSED_FIX", "NCLOB MEMORY THRESHOLD 1000"),
+                ("RCA_CONFIDENCE", "DECIMAL(5,4)"),
+                ("AFFECTED_COMPONENT", "NVARCHAR(200)"),
+                ("FIX_SUMMARY", "NCLOB MEMORY THRESHOLD 1000"),
+                ("COMMENT", "NCLOB MEMORY THRESHOLD 1000"),
+                ("CORRELATION_ID", "NVARCHAR(200)"),
+                ("LOG_START", "NVARCHAR(64)"),
+                ("LOG_END", "NVARCHAR(64)"),
+                ("RESOLVED_AT", "NVARCHAR(64)"),
+                ("TAGS", "NCLOB MEMORY THRESHOLD 1000"),
+                ("INCIDENT_GROUP_KEY", "NVARCHAR(64)"),
+                ("OCCURRENCE_COUNT", "INTEGER DEFAULT 1"),
+                ("LAST_SEEN", "NVARCHAR(64)"),
+                ("VERIFICATION_STATUS", "NVARCHAR(64)"),
+                ("SOURCE_TYPE", "NVARCHAR(64)"),
+                ("FIX_STEPS", "NCLOB MEMORY THRESHOLD 1000"),
+                ("FIX_PLAN_GENERATED_AT", "NVARCHAR(64)"),
+                ("LAST_FAILED_STAGE", "NVARCHAR(64)"),
+                ("IFLOW_SNAPSHOT_BEFORE", "NCLOB MEMORY THRESHOLD 1000"),
+                ("PENDING_SINCE", "NVARCHAR(64)"),
+                ("TICKET_ID", "NVARCHAR(512)"),
+                ("CONSECUTIVE_FAILURES", "INTEGER DEFAULT 0"),
+                ("AUTO_ESCALATED", "INTEGER DEFAULT 0"),
+                ("INTEGRATION_FLOW_NAME", "NVARCHAR(500)"),
+                ("ARTIFACT_ID", "NVARCHAR(500)"),
+                ("designtime_artifact_id", "NVARCHAR(500)"),
+                ("property_to_change", "NVARCHAR(500)"),
+                ("current_value", "NCLOB MEMORY THRESHOLD 1000"),
+                ("correct_value", "NCLOB MEMORY THRESHOLD 1000"),
+                ("rca_fixes_json", "NCLOB MEMORY THRESHOLD 1000"),
             ]
             for col_name, col_type in new_columns:
                 try:
@@ -126,7 +161,7 @@ class HanaClient:
             cursor.close()
             return True
 
-        # Create table
+        # Create table (full schema)
         create_sql = f"""
             CREATE COLUMN TABLE {self.full_table} (
                 INCIDENT_ID          NVARCHAR(64) PRIMARY KEY,
@@ -151,7 +186,42 @@ class HanaClient:
                 HISTORY_ENTRIES      NCLOB,
                 PROPERTIES_JSON      NCLOB,
                 ARTIFACT_JSON        NCLOB,
-                ERROR_DETAILS_JSON   NCLOB
+                ERROR_DETAILS_JSON   NCLOB,
+                MESSAGE_GUID         NVARCHAR(200),
+                IFLOW_ID             NVARCHAR(500),
+                SENDER               NVARCHAR(200),
+                RECEIVER             NVARCHAR(200),
+                ROOT_CAUSE           NCLOB MEMORY THRESHOLD 1000,
+                PROPOSED_FIX         NCLOB MEMORY THRESHOLD 1000,
+                RCA_CONFIDENCE       DECIMAL(5,4),
+                AFFECTED_COMPONENT   NVARCHAR(200),
+                FIX_SUMMARY          NCLOB MEMORY THRESHOLD 1000,
+                COMMENT              NCLOB MEMORY THRESHOLD 1000,
+                CORRELATION_ID       NVARCHAR(200),
+                LOG_START            NVARCHAR(64),
+                LOG_END              NVARCHAR(64),
+                RESOLVED_AT          NVARCHAR(64),
+                TAGS                 NCLOB MEMORY THRESHOLD 1000,
+                INCIDENT_GROUP_KEY   NVARCHAR(64),
+                OCCURRENCE_COUNT     INTEGER DEFAULT 1,
+                LAST_SEEN            NVARCHAR(64),
+                VERIFICATION_STATUS  NVARCHAR(64),
+                SOURCE_TYPE          NVARCHAR(64),
+                FIX_STEPS            NCLOB MEMORY THRESHOLD 1000,
+                FIX_PLAN_GENERATED_AT NVARCHAR(64),
+                LAST_FAILED_STAGE    NVARCHAR(64),
+                IFLOW_SNAPSHOT_BEFORE NCLOB MEMORY THRESHOLD 1000,
+                PENDING_SINCE        NVARCHAR(64),
+                TICKET_ID            NVARCHAR(512),
+                CONSECUTIVE_FAILURES INTEGER DEFAULT 0,
+                AUTO_ESCALATED       INTEGER DEFAULT 0,
+                INTEGRATION_FLOW_NAME NVARCHAR(500),
+                ARTIFACT_ID          NVARCHAR(500),
+                designtime_artifact_id NVARCHAR(500),
+                property_to_change   NVARCHAR(500),
+                current_value        NCLOB MEMORY THRESHOLD 1000,
+                correct_value        NCLOB MEMORY THRESHOLD 1000,
+                rca_fixes_json       NCLOB MEMORY THRESHOLD 1000
             )
         """
         cursor.execute(create_sql)
@@ -162,106 +232,13 @@ class HanaClient:
 
     def upsert_observability_record(self, record: Dict[str, Any]) -> bool:
         """Insert or update a single observability record."""
-        if not self._ensure_connected():
-            return False
-
-        cursor = self.conn.cursor()
-        now = datetime.now().isoformat()
-        try:
-            sql = f"""
-                INSERT INTO {self.full_table} (
-                    INCIDENT_ID, SUBSCRIPTION_ID, WORKFLOW_NAME,
-                    ERROR_CODE, ERROR_MESSAGE, ERROR_CATEGORY,
-                    STATUS, RCA_ROOT_CAUSE, FIX_STRATEGY,
-                    CREATED_AT, UPDATED_AT,
-                    AUTO_FIX_ATTEMPTED, AUTO_FIX_SUCCESS, RETRY_COUNT,
-                    AI_DIAGNOSIS, AI_PROPOSED_FIX, AI_CONFIDENCE,
-                    AI_FIX_PATCH, FIELD_CHANGES, HISTORY_ENTRIES,
-                    PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """
-            cursor.execute(sql, (
-                record.get("incident_id"),
-                record.get("subscription_id"),
-                record.get("workflow_name"),
-                record.get("error_code", "unknown"),
-                (record.get("error_message") or "")[:2000],
-                record.get("error_category", "UNKNOWN_ERROR"),
-                record.get("status", "Ticket Created"),
-                (record.get("rca_root_cause") or "")[:4000],
-                (record.get("fix_strategy") or "")[:256],
-                now, now,
-                record.get("auto_fix_attempted", False),
-                record.get("auto_fix_success", False),
-                record.get("retry_count", 0),
-                record.get("ai_diagnosis"),
-                record.get("ai_proposed_fix"),
-                record.get("ai_confidence"),
-                record.get("ai_fix_patch"),
-                record.get("field_changes"),
-                record.get("history_entries"),
-                record.get("properties_json"),
-                record.get("artifact_json"),
-                record.get("error_details_json")
-            ))
-            self.conn.commit()
-            return True
-        except dbapi.IntegrityError:
-            # Update on conflict
-            update_sql = f"""
-                UPDATE {self.full_table}
-                SET SUBSCRIPTION_ID = ?, WORKFLOW_NAME = ?, ERROR_CODE = ?, ERROR_MESSAGE = ?,
-                    ERROR_CATEGORY = ?, STATUS = ?, RCA_ROOT_CAUSE = ?, FIX_STRATEGY = ?,
-                    UPDATED_AT = ?, AUTO_FIX_ATTEMPTED = ?, AUTO_FIX_SUCCESS = ?, RETRY_COUNT = ?,
-                    AI_DIAGNOSIS = COALESCE(AI_DIAGNOSIS, ?),
-                    AI_PROPOSED_FIX = COALESCE(AI_PROPOSED_FIX, ?),
-                    AI_CONFIDENCE = COALESCE(AI_CONFIDENCE, ?),
-                    AI_FIX_PATCH = COALESCE(AI_FIX_PATCH, ?),
-                    FIELD_CHANGES = COALESCE(FIELD_CHANGES, ?),
-                    HISTORY_ENTRIES = COALESCE(HISTORY_ENTRIES, ?),
-                    PROPERTIES_JSON = COALESCE(PROPERTIES_JSON, ?),
-                    ARTIFACT_JSON = COALESCE(ARTIFACT_JSON, ?),
-                    ERROR_DETAILS_JSON = COALESCE(ERROR_DETAILS_JSON, ?)
-                WHERE INCIDENT_ID = ?
-            """
-            cursor.execute(update_sql, (
-                record.get("subscription_id"),
-                record.get("workflow_name"),
-                record.get("error_code", "unknown"),
-                (record.get("error_message") or "")[:2000],
-                record.get("error_category", "UNKNOWN_ERROR"),
-                record.get("status", "Ticket Created"),
-                (record.get("rca_root_cause") or "")[:4000],
-                (record.get("fix_strategy") or "")[:256],
-                now,
-                record.get("auto_fix_attempted", False),
-                record.get("auto_fix_success", False),
-                record.get("retry_count", 0),
-                record.get("ai_diagnosis"),
-                record.get("ai_proposed_fix"),
-                record.get("ai_confidence"),
-                record.get("ai_fix_patch"),
-                record.get("field_changes"),
-                record.get("history_entries"),
-                record.get("properties_json"),
-                record.get("artifact_json"),
-                record.get("error_details_json"),
-                record.get("incident_id")
-            ))
-            self.conn.commit()
-            return True
-        except Exception as e:
-            logger.error("Upsert failed for %s: %s", record.get("incident_id"), e)
-            if self.conn:
-                self.conn.rollback()
-            return False
-        finally:
-            cursor.close()
+        return self.batch_upsert_observability([record])[0] > 0  # reuse batch logic
 
     def batch_upsert_observability(self, records: List[Dict[str, Any]]) -> Tuple[int, int]:
         """
         Insert or update multiple observability records in a single transaction.
-        Returns (inserted_count, failed_count).
+        Now includes new columns: LOG_START, LAST_SEEN, OCCURRENCE_COUNT,
+        AFFECTED_COMPONENT, CORRELATION_ID, SOURCE_TYPE, etc.
         """
         if not records or not self._ensure_connected():
             return 0, len(records)
@@ -282,8 +259,11 @@ class HanaClient:
                         AUTO_FIX_ATTEMPTED, AUTO_FIX_SUCCESS, RETRY_COUNT,
                         AI_DIAGNOSIS, AI_PROPOSED_FIX, AI_CONFIDENCE,
                         AI_FIX_PATCH, FIELD_CHANGES, HISTORY_ENTRIES,
-                        PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON,
+                        LOG_START, LAST_SEEN, OCCURRENCE_COUNT,
+                        AFFECTED_COMPONENT, CORRELATION_ID, SOURCE_TYPE,
+                        INTEGRATION_FLOW_NAME
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
                 cursor.execute(sql, (
                     rec.get("incident_id"),
@@ -295,7 +275,7 @@ class HanaClient:
                     rec.get("status", "Ticket Created"),
                     (rec.get("rca_root_cause") or "")[:4000],
                     (rec.get("fix_strategy") or "")[:256],
-                    now, now,
+                    rec.get("created_at"), now,
                     rec.get("auto_fix_attempted", False),
                     rec.get("auto_fix_success", False),
                     rec.get("retry_count", 0),
@@ -307,10 +287,18 @@ class HanaClient:
                     rec.get("history_entries"),
                     rec.get("properties_json"),
                     rec.get("artifact_json"),
-                    rec.get("error_details_json")
+                    rec.get("error_details_json"),
+                    rec.get("log_start"),
+                    rec.get("last_seen"),
+                    rec.get("occurrence_count", 1),
+                    rec.get("affected_component"),
+                    rec.get("correlation_id"),
+                    rec.get("source_type", "AzureDiagnostics"),
+                    rec.get("integration_flow_name"),
                 ))
                 inserted += 1
             except dbapi.IntegrityError:
+                # Update on conflict – increment occurrence count and update last_seen
                 update_sql = f"""
                     UPDATE {self.full_table}
                     SET SUBSCRIPTION_ID = ?, WORKFLOW_NAME = ?, ERROR_CODE = ?, ERROR_MESSAGE = ?,
@@ -324,7 +312,14 @@ class HanaClient:
                         HISTORY_ENTRIES = COALESCE(HISTORY_ENTRIES, ?),
                         PROPERTIES_JSON = COALESCE(PROPERTIES_JSON, ?),
                         ARTIFACT_JSON = COALESCE(ARTIFACT_JSON, ?),
-                        ERROR_DETAILS_JSON = COALESCE(ERROR_DETAILS_JSON, ?)
+                        ERROR_DETAILS_JSON = COALESCE(ERROR_DETAILS_JSON, ?),
+                        LOG_START = COALESCE(LOG_START, ?),
+                        LAST_SEEN = ?,
+                        OCCURRENCE_COUNT = OCCURRENCE_COUNT + 1,
+                        AFFECTED_COMPONENT = COALESCE(AFFECTED_COMPONENT, ?),
+                        CORRELATION_ID = COALESCE(CORRELATION_ID, ?),
+                        SOURCE_TYPE = COALESCE(SOURCE_TYPE, ?),
+                        INTEGRATION_FLOW_NAME = COALESCE(INTEGRATION_FLOW_NAME, ?)
                     WHERE INCIDENT_ID = ?
                 """
                 cursor.execute(update_sql, (
@@ -349,6 +344,12 @@ class HanaClient:
                     rec.get("properties_json"),
                     rec.get("artifact_json"),
                     rec.get("error_details_json"),
+                    rec.get("log_start"),
+                    now,
+                    rec.get("affected_component"),
+                    rec.get("correlation_id"),
+                    rec.get("source_type", "AzureDiagnostics"),
+                    rec.get("integration_flow_name"),
                     rec.get("incident_id")
                 ))
                 inserted += 1
@@ -363,25 +364,61 @@ class HanaClient:
         logger.info("Batch upsert: %d inserted/updated, %d failed", inserted, failed)
         return inserted, failed
 
+    def update_rca_record(self, incident_id: str, root_cause: str, proposed_fix: str,
+                          confidence: float, affected_component: str = None) -> bool:
+        """Update RCA-related columns for a given incident."""
+        if not self._ensure_connected():
+            return False
+        cursor = self.conn.cursor()
+        try:
+            sql = f"""
+                UPDATE {self.full_table}
+                SET ROOT_CAUSE = COALESCE(ROOT_CAUSE, ?),
+                    PROPOSED_FIX = COALESCE(PROPOSED_FIX, ?),
+                    RCA_CONFIDENCE = COALESCE(RCA_CONFIDENCE, ?),
+                    AFFECTED_COMPONENT = COALESCE(AFFECTED_COMPONENT, ?)
+                WHERE INCIDENT_ID = ?
+            """
+            cursor.execute(sql, (root_cause, proposed_fix, confidence, affected_component, incident_id))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error("Failed to update RCA record for %s: %s", incident_id, e)
+            return False
+        finally:
+            cursor.close()
+
+    def update_fix_result(self, incident_id: str, fix_summary: str, fix_steps: str,
+                          verification_status: str, resolved_at: str = None) -> bool:
+        """Update fix-related columns after remediation."""
+        if not self._ensure_connected():
+            return False
+        cursor = self.conn.cursor()
+        try:
+            sql = f"""
+                UPDATE {self.full_table}
+                SET FIX_SUMMARY = COALESCE(FIX_SUMMARY, ?),
+                    FIX_STEPS = COALESCE(FIX_STEPS, ?),
+                    VERIFICATION_STATUS = COALESCE(VERIFICATION_STATUS, ?),
+                    RESOLVED_AT = COALESCE(RESOLVED_AT, ?)
+                WHERE INCIDENT_ID = ?
+            """
+            cursor.execute(sql, (fix_summary, fix_steps, verification_status, resolved_at, incident_id))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error("Failed to update fix result for %s: %s", incident_id, e)
+            return False
+        finally:
+            cursor.close()
+
     def get_dashboard_stats(
         self,
         start_date: datetime,
         end_date: datetime,
         subscription_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        Gather dashboard metrics for the observability table.
-
-        Args:
-            start_date: Start of time range.
-            end_date: End of time range.
-            subscription_id: Optional filter by subscription.
-
-        Returns:
-            Dict with total_incidents, auto_fix_attempted, auto_fix_succeeded,
-            auto_fix_rate_percent, error_distribution, status_distribution,
-            top_failing_workflows.
-        """
+        """Gather dashboard metrics (unchanged, kept for compatibility)."""
         if not self._ensure_connected():
             return {"error": "HANA connection failed"}
 
@@ -453,7 +490,8 @@ class HanaClient:
         knowledge_table = f'"{self.schema}"."{settings.HANA_TABLE}"'
         cur = self.conn.cursor()
         if drop_first:
-            # Only allow destructive operation if explicitly flagged (e.g., not in production)
+            import os
+            # Only allow destructive operation if explicitly flagged
             if os.getenv("ENV", "production") == "development":
                 try:
                     cur.execute(f"DROP TABLE {knowledge_table}")
@@ -546,7 +584,6 @@ class HanaClient:
         cur = self.conn.cursor()
         for chunk_id, vector in updates:
             vec_str = "[" + ",".join(str(v) for v in vector) + "]"
-            # Use parameterized query to prevent injection
             cur.execute(
                 f"""
                 UPDATE {knowledge_table}
@@ -639,8 +676,52 @@ def get_global_client() -> Optional[HanaClient]:
         return None
 
 
-# Compatibility wrapper for old code
 def get_hana_client(settings=None):
     """Deprecated – kept for backward compatibility."""
     logger.warning("get_hana_client() is deprecated – use get_global_client() instead")
     return get_global_client()
+# server/db/hana_client.py (inside HanaClient class)
+
+def update_rca_record(self, incident_id: str, root_cause: str, proposed_fix: str,
+                      confidence: float, affected_component: str = None) -> bool:
+    """
+    Insert or update RCA data for an incident (upsert).
+    """
+    if not self._ensure_connected():
+        logger.error("HANA not connected – cannot update RCA record")
+        return False
+
+    cursor = self.conn.cursor()
+    try:
+        # Check if record exists
+        cursor.execute(f"SELECT 1 FROM {self.full_table} WHERE INCIDENT_ID = ?", (incident_id,))
+        exists = cursor.fetchone() is not None
+
+        if exists:
+            sql = f"""
+                UPDATE {self.full_table}
+                SET ROOT_CAUSE = COALESCE(ROOT_CAUSE, ?),
+                    PROPOSED_FIX = COALESCE(PROPOSED_FIX, ?),
+                    RCA_CONFIDENCE = COALESCE(RCA_CONFIDENCE, ?),
+                    AFFECTED_COMPONENT = COALESCE(AFFECTED_COMPONENT, ?)
+                WHERE INCIDENT_ID = ?
+            """
+            cursor.execute(sql, (root_cause, proposed_fix, confidence, affected_component, incident_id))
+            logger.info(f"Updated RCA record for {incident_id}")
+        else:
+            # Insert a new record with minimal data
+            sql = f"""
+                INSERT INTO {self.full_table} (
+                    INCIDENT_ID, ROOT_CAUSE, PROPOSED_FIX, RCA_CONFIDENCE, AFFECTED_COMPONENT
+                ) VALUES (?, ?, ?, ?, ?)
+            """
+            cursor.execute(sql, (incident_id, root_cause, proposed_fix, confidence, affected_component))
+            logger.info(f"Inserted new RCA record for {incident_id}")
+
+        self.conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to upsert RCA record for {incident_id}: {e}")
+        return False
+    finally:
+        cursor.close()
