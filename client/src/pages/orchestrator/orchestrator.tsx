@@ -1,3 +1,7 @@
+/**
+ * @fileoverview Orchestrator chat page: loads chat history by route `id`, streams bubbles from `useAppStore`,
+ * posts multipart `/query` via `sendChatMessage`, shows pipeline status from `fetchPipelineStatus`.
+ */
 import {
   useEffect,
   useRef,
@@ -21,11 +25,21 @@ const QUICK_PROMPTS = [
   "Test iFlow 'PO_to_ECC'",
 ];
 
+/**
+ * Formats a history timestamp string for chat bubble labels.
+ * @param {string} [input] - ISO-ish string from history; falls back to now when missing/invalid.
+ * @returns {string} Short locale time (`HH:MM`).
+ */
 function formatTs(input?: string): string {
   const d = input ? (() => { const c = input.trim().replace(" ", "T").split(".")[0]; const x = new Date(c); return isNaN(x.getTime()) ? new Date() : x; })() : new Date();
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/**
+ * Minimal markdown → HTML for bot messages (bold, italic, code, headings, simple lists).
+ * @param {string} text - Raw assistant markdown/plain text.
+ * @returns {string} HTML string for `dangerouslySetInnerHTML` consumers.
+ */
 function mdToHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -39,6 +53,10 @@ function mdToHtml(text: string): string {
     .replace(/(<li>[\s\S]+?<\/li>)/g, "<ul>$1</ul>");
 }
 
+/**
+ * Main orchestrator UI: chat thread, composer with attachments, quick prompts, pipeline banner.
+ * @returns {JSX.Element} Orchestrator page.
+ */
 export default function Orchestrator() {
   const { id } = useParams<{ id?: string }>();
   const { history, user, chatBubbles, addChatBubble, clearChatBubbles } = useAppStore();
@@ -140,7 +158,7 @@ export default function Orchestrator() {
             Hi {user.firstname}, how can I help?
           </h2>
           <p className={styles.welcomeHint}>
-            Ask me anything about SAP Integration Suite — creating iFlows,
+            Ask me anything about Azure Logic Apps — creating iFlows,
             mapping messages, running tests, or monitoring errors.
           </p>
           <div className={styles.quickPrompts}>

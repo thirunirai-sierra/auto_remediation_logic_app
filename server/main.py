@@ -31,8 +31,6 @@ from pathlib import Path
 from threading import Event
 from typing import Any, Dict, List, Optional, Set
 from contextlib import asynccontextmanager
-# Add at the top with other imports
-from observability_routes import router as observability_router
 import uvicorn
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,6 +47,15 @@ import os
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+OBSERVABILITY_ROUTER_AVAILABLE = False
+observability_router = None
+try:
+    from observability_routes import router as observability_router
+    OBSERVABILITY_ROUTER_AVAILABLE = True
+except Exception as e:
+    _prelog = logging.getLogger(__name__)
+    _prelog.warning("Observability router not available: %s", e)
 
 # Setup logging before optional imports that may log
 logging.basicConfig(
@@ -356,9 +363,9 @@ class RemediationAPI:
 
         # Register routes
         self._register_routes(app)
-        app.include_router(observability_router)
-        app.include_router(ingestion_router) 
-
+        if OBSERVABILITY_ROUTER_AVAILABLE and observability_router is not None:
+            app.include_router(observability_router)
+        app.include_router(ingestion_router)
         return app
 
     def _register_routes(self, app: FastAPI):
@@ -399,7 +406,8 @@ class RemediationAPI:
                         COALESCE(STATUS, 'FAILED'),
                         COALESCE(CREATED_AT, UPDATED_AT)
                     FROM "{table}"
-                    WHERE UPPER(COALESCE(STATUS, '')) IN ('FAILED', 'ERROR', 'IN_PROGRESS', 'PENDING', 'AUTO_FIXED', 'FIX_VERIFIED', 'HUMAN_FIXED')
+                    WHERE ERROR_MESSAGE IS NOT NULL
+                      AND UPPER(COALESCE(STATUS, '')) NOT IN ('IGNORED', 'RESOLVED')
                     ORDER BY COALESCE(UPDATED_AT, CREATED_AT) DESC
                     """
                 )
@@ -432,16 +440,23 @@ class RemediationAPI:
 
                 cur.execute(f'SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM "{table}"')
                 total_flows = int(cur.fetchone()[0] or 0)
-                cur.execute(f'SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM "{table}" WHERE UPPER(COALESCE(STATUS, \'\')) IN (\'FAILED\', \'ERROR\')')
+                cur.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT WORKFLOW_NAME)
+                    FROM "{table}"
+                    WHERE ERROR_MESSAGE IS NOT NULL
+                      AND UPPER(COALESCE(TO_NVARCHAR(STATUS), '')) NOT IN ('IGNORED', 'RESOLVED')
+                    """
+                )
                 error_flows = int(cur.fetchone()[0] or 0)
                 cur.execute(f'SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM "{table}" WHERE AUTO_FIX_SUCCESS = TRUE')
                 fixed_flows = int(cur.fetchone()[0] or 0)
 
                 cur.execute(
                     f"""
-                    SELECT COALESCE(STATUS, 'UNKNOWN') AS S, COUNT(*)
+                    SELECT COALESCE(TO_NVARCHAR(STATUS), 'UNKNOWN') AS S, COUNT(*)
                     FROM "{table}"
-                    GROUP BY COALESCE(STATUS, 'UNKNOWN')
+                    GROUP BY COALESCE(TO_NVARCHAR(STATUS), 'UNKNOWN')
                     ORDER BY COUNT(*) DESC
                     """
                 )
@@ -449,9 +464,9 @@ class RemediationAPI:
 
                 cur.execute(
                     f"""
-                    SELECT COALESCE(ERROR_CATEGORY, ERROR_CODE, 'UNKNOWN') AS E, COUNT(*)
+                    SELECT COALESCE(TO_NVARCHAR(ERROR_CATEGORY), TO_NVARCHAR(ERROR_CODE), 'UNKNOWN') AS E, COUNT(*)
                     FROM "{table}"
-                    GROUP BY COALESCE(ERROR_CATEGORY, ERROR_CODE, 'UNKNOWN')
+                    GROUP BY COALESCE(TO_NVARCHAR(ERROR_CATEGORY), TO_NVARCHAR(ERROR_CODE), 'UNKNOWN')
                     ORDER BY COUNT(*) DESC
                     """
                 )
@@ -461,7 +476,8 @@ class RemediationAPI:
                     f"""
                     SELECT TOP 10 WORKFLOW_NAME, COUNT(*)
                     FROM "{table}"
-                    WHERE UPPER(COALESCE(STATUS, '')) IN ('FAILED', 'ERROR')
+                    WHERE ERROR_MESSAGE IS NOT NULL
+                      AND UPPER(COALESCE(TO_NVARCHAR(STATUS), '')) NOT IN ('IGNORED', 'RESOLVED')
                     GROUP BY WORKFLOW_NAME
                     ORDER BY COUNT(*) DESC
                     """
@@ -472,11 +488,11 @@ class RemediationAPI:
                     f"""
                     SELECT TOP {int(top)}
                         WORKFLOW_NAME,
-                        COALESCE(ERROR_CODE, ERROR_CATEGORY),
+                        COALESCE(TO_NVARCHAR(ERROR_CODE), TO_NVARCHAR(ERROR_CATEGORY)),
                         ERROR_MESSAGE,
                         COALESCE(UPDATED_AT, CREATED_AT),
                         NULL,
-                        COALESCE(STATUS, 'UNKNOWN'),
+                        COALESCE(TO_NVARCHAR(STATUS), 'UNKNOWN'),
                         INCIDENT_ID
                     FROM "{table}"
                     WHERE ERROR_MESSAGE IS NOT NULL

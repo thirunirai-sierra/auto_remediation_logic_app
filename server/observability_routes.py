@@ -1,15 +1,15 @@
-# observability_routes.py
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fastapi import APIRouter, HTTPException, Query
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel
 import json
 import re
+from typing import Optional
+
 import requests
-from datetime import datetime
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from config import get_settings
 from auth import get_arm_token
@@ -17,29 +17,95 @@ from api import get_workflow
 from agent.classifier.analyzer import analyze_error
 from agent.rca_agent import generate_rca
 from workflow_agent import run_remediation
-from hana_observability import get_global_client      # use singleton
+from hana_observability import get_global_client
 
 router = APIRouter(prefix="/api", tags=["observability"])
 settings = get_settings()
 
-# Request/response models
+
 class ApplyFixRequest(BaseModel):
     trigger_type: str = "user"
     proposed_fix: Optional[str] = None
     force: bool = False
 
+
 class UpdateTicketRequest(BaseModel):
     status: str
     resolution_notes: Optional[str] = None
+
 
 class ApproveIncidentRequest(BaseModel):
     approved: bool
     comment: Optional[str] = None
 
+
 def get_client():
     return get_global_client()
 
-# ---------- Message List ----------
+
+def _norm_monitor_status(raw: object) -> str:
+    s = (raw if raw is not None else "") or ""
+    return str(s).strip().upper().replace(" ", "_")
+
+
+# Buckets must stay aligned with client/src/pages/observability/observability.tsx (summary cards).
+_FAILED = frozenset(
+    {
+        "FAILED",
+        "FIX_FAILED",
+        "FIX_FAILED_UPDATE",
+        "FIX_FAILED_DEPLOY",
+        "FIX_FAILED_RUNTIME",
+        "RCA_FAILED",
+        "PIPELINE_ERROR",
+        "DETECTED",
+        "ARTIFACT_MISSING",
+    }
+)
+_SUCCESS = frozenset(
+    {
+        "AUTO_FIXED",
+        "HUMAN_FIXED",
+        "FIX_VERIFIED",
+        "RETRIED",
+        "SUCCESS",
+        "HUMAN_INITIATED_FIX",
+        "FIX_DEPLOYED",
+    }
+)
+_PROCESSING = frozenset(
+    {
+        "RCA_IN_PROGRESS",
+        "FIX_IN_PROGRESS",
+        "FIX_ATTEMPTED",
+        "CLASSIFIED",
+        "RCA_COMPLETE",
+        "FIX_APPLIED_PENDING_VERIFICATION",
+        "PROCESSING",
+    }
+)
+_RETRY = frozenset(
+    {
+        "RETRY",
+        "PENDING_APPROVAL",
+        "TICKET_CREATED",
+        "AWAITING_APPROVAL",
+    }
+)
+
+
+def _bucket_monitor_status(norm: str) -> str:
+    if norm in _FAILED:
+        return "FAILED"
+    if norm in _SUCCESS:
+        return "SUCCESS"
+    if norm in _PROCESSING:
+        return "PROCESSING"
+    if norm in _RETRY:
+        return "RETRY"
+    return "FAILED"
+
+
 @router.get("/monitor/messages")
 async def get_monitor_messages(
     limit: int = Query(50, ge=1, le=200),
@@ -50,7 +116,7 @@ async def get_monitor_messages(
     client = get_client()
     if not client or not client._ensure_connected():
         raise HTTPException(503, "Observability database not available")
-    
+
     cursor = client.conn.cursor()
     conditions = []
     params = []
@@ -61,12 +127,25 @@ async def get_monitor_messages(
         conditions.append("(WORKFLOW_NAME LIKE ? OR ERROR_MESSAGE LIKE ?)")
         params.append(f"%{search}%")
         params.append(f"%{search}%")
-    
+
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     count_sql = f"SELECT COUNT(*) FROM {client.full_table} {where}"
     cursor.execute(count_sql, params)
     total = cursor.fetchone()[0]
-    
+
+    summary = {"FAILED": 0, "SUCCESS": 0, "PROCESSING": 0, "RETRY": 0}
+    breakdown_sql = f"""
+        SELECT STATUS, COUNT(*) AS CNT
+        FROM {client.full_table}
+        {where}
+        GROUP BY STATUS
+    """
+    cursor.execute(breakdown_sql, params)
+    for row in cursor.fetchall():
+        st_raw, cnt = row[0], int(row[1] or 0)
+        key = _bucket_monitor_status(_norm_monitor_status(st_raw))
+        summary[key] += cnt
+
     data_sql = f"""
         SELECT INCIDENT_ID, WORKFLOW_NAME, STATUS, ERROR_CATEGORY, CREATED_AT, UPDATED_AT,
                ERROR_MESSAGE, RCA_ROOT_CAUSE
@@ -81,25 +160,27 @@ async def get_monitor_messages(
     messages = []
     for row in rows:
         d = dict(zip(cols, row))
-        messages.append({
-            "message_guid": d["INCIDENT_ID"],
-            "iflow_display": d["WORKFLOW_NAME"],
-            "title": d["WORKFLOW_NAME"],
-            "status": d["STATUS"],
-            "log_start": d["CREATED_AT"].isoformat() if d["CREATED_AT"] else None,
-            "updatedAt": d["UPDATED_AT"].isoformat() if d["UPDATED_AT"] else None,
-            "error_type": d["ERROR_CATEGORY"],
-        })
+        messages.append(
+            {
+                "message_guid": d["INCIDENT_ID"],
+                "iflow_display": d["WORKFLOW_NAME"],
+                "title": d["WORKFLOW_NAME"],
+                "status": d["STATUS"],
+                "log_start": d["CREATED_AT"].isoformat() if d["CREATED_AT"] else None,
+                "updatedAt": d["UPDATED_AT"].isoformat() if d["UPDATED_AT"] else None,
+                "error_type": d["ERROR_CATEGORY"],
+            }
+        )
     cursor.close()
-    return {"messages": messages, "total": total}
+    return {"messages": messages, "total": total, "summary": summary}
 
-# ---------- Message Detail ----------
+
 @router.get("/monitor/message/{incident_id}")
 async def get_monitor_message_detail(incident_id: str):
     client = get_client()
     if not client or not client._ensure_connected():
         raise HTTPException(503, "Database unavailable")
-    
+
     cursor = client.conn.cursor()
     sql = f"""
         SELECT INCIDENT_ID, WORKFLOW_NAME, ERROR_CODE, ERROR_MESSAGE, ERROR_CATEGORY,
@@ -118,7 +199,7 @@ async def get_monitor_message_detail(incident_id: str):
     cols = [desc[0] for desc in cursor.description]
     rec = dict(zip(cols, row))
     cursor.close()
-    
+
     error_details = {
         "error_message": rec.get("ERROR_MESSAGE"),
         "raw_error_text": rec.get("ERROR_MESSAGE"),
@@ -126,7 +207,7 @@ async def get_monitor_message_detail(incident_id: str):
         "log_start": rec["CREATED_AT"].isoformat() if rec.get("CREATED_AT") else None,
         "log_end": rec["UPDATED_AT"].isoformat() if rec.get("UPDATED_AT") else None,
     }
-    
+
     ai_diag = rec.get("AI_DIAGNOSIS") or ""
     ai_proposed = rec.get("AI_PROPOSED_FIX") or ""
     ai_conf = rec.get("AI_CONFIDENCE") or 0.0
@@ -135,9 +216,9 @@ async def get_monitor_message_detail(incident_id: str):
     history = json.loads(rec.get("HISTORY_ENTRIES") or "[]")
     properties = json.loads(rec.get("PROPERTIES_JSON") or "{}")
     artifact = json.loads(rec.get("ARTIFACT_JSON") or "{}")
-    
+
     can_generate_fix = rec.get("AUTO_FIX_ATTEMPTED") is not None and not rec.get("AUTO_FIX_SUCCESS")
-    
+
     return {
         "incident_id": incident_id,
         "iflow_display": rec["WORKFLOW_NAME"],
@@ -161,30 +242,33 @@ async def get_monitor_message_detail(incident_id: str):
         "incident_status": rec["STATUS"],
     }
 
-# ---------- Analyze (AI) ----------
+
 @router.post("/monitor/analyze/{incident_id}")
 async def analyze_message(incident_id: str):
     client = get_client()
     if not client or not client._ensure_connected():
         raise HTTPException(503, "Database unavailable")
-    
+
     cursor = client.conn.cursor()
-    cursor.execute(f"SELECT WORKFLOW_NAME, ERROR_MESSAGE, ERROR_CODE, SUBSCRIPTION_ID FROM {client.full_table} WHERE INCIDENT_ID = ?", (incident_id,))
+    cursor.execute(
+        f"SELECT WORKFLOW_NAME, ERROR_MESSAGE, ERROR_CODE, SUBSCRIPTION_ID FROM {client.full_table} WHERE INCIDENT_ID = ?",
+        (incident_id,),
+    )
     row = cursor.fetchone()
     if not row:
         raise HTTPException(404, "Incident not found")
-    workflow_name, error_msg, error_code, sub_id = row
+    workflow_name, error_msg, error_code, _sub_id = row
     cursor.close()
-    
+
     error_json = {"message": error_msg, "code": error_code}
     flow_context = {"workflow_name": workflow_name, "run_id": incident_id}
-    
+
     analysis = analyze_error(error_json, settings, flow_context=flow_context)
     rca = generate_rca({"error": error_msg}, flow_context=flow_context)
     diagnosis = f"{analysis.get('root_cause', '')} {rca.get('root_cause', '')}".strip()
-    proposed_fix = analysis.get('recommendation', '')
-    confidence = rca.get('confidence', 0.7)
-    
+    proposed_fix = analysis.get("recommendation", "")
+    confidence = rca.get("confidence", 0.7)
+
     cursor = client.conn.cursor()
     update_sql = f"""
         UPDATE {client.full_table}
@@ -197,17 +281,34 @@ async def analyze_message(incident_id: str):
     cursor.close()
     return {"status": "analyzed", "diagnosis": diagnosis, "confidence": confidence}
 
-# ---------- Explain Error (LLM) ----------
+
 def _call_llm_explanation(error_msg, error_code, workflow):
-    url = f"{settings.azure_openai_endpoint}/openai/deployments/{settings.azure_openai_deployment}/chat/completions?api-version={settings.azure_openai_api_version}"
-    system = "You are an expert in Azure Logic Apps. Explain the error in simple terms, suggest likely causes, and give recommended actions. Return JSON with keys: summary, what_happened, likely_causes (list), recommended_actions (list), error_category."
+    url = (
+        f"{settings.azure_openai_endpoint}/openai/deployments/"
+        f"{settings.azure_openai_deployment}/chat/completions"
+        f"?api-version={settings.azure_openai_api_version}"
+    )
+    system = (
+        "You are an expert in Azure Logic Apps. Explain the error in simple terms, "
+        "suggest likely causes, and give recommended actions. Return JSON with keys: "
+        "summary, what_happened, likely_causes (list), recommended_actions (list), error_category."
+    )
     user = f"Error: {error_msg}\nCode: {error_code}\nWorkflow: {workflow}"
-    response = requests.post(url, headers={"api-key": settings.azure_openai_api_key}, json={"messages": [{"role": "system", "content": system}, {"role": "user", "content": user}], "temperature": 0.3, "max_tokens": 800})
+    response = requests.post(
+        url,
+        headers={"api-key": settings.azure_openai_api_key},
+        json={
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "temperature": 0.3,
+            "max_tokens": 800,
+        },
+    )
     content = response.json()["choices"][0]["message"]["content"]
     match = re.search(r"\{.*\}", content, re.DOTALL)
     if match:
         return json.loads(match.group())
     return {"summary": content[:500], "error_category": "UNKNOWN"}
+
 
 @router.post("/monitor/explain/{incident_id}")
 async def explain_error(incident_id: str):
@@ -215,7 +316,10 @@ async def explain_error(incident_id: str):
     if not client:
         raise HTTPException(503, "Database unavailable")
     cursor = client.conn.cursor()
-    cursor.execute(f"SELECT ERROR_MESSAGE, ERROR_CODE, WORKFLOW_NAME FROM {client.full_table} WHERE INCIDENT_ID = ?", (incident_id,))
+    cursor.execute(
+        f"SELECT ERROR_MESSAGE, ERROR_CODE, WORKFLOW_NAME FROM {client.full_table} WHERE INCIDENT_ID = ?",
+        (incident_id,),
+    )
     row = cursor.fetchone()
     if not row:
         raise HTTPException(404, "Incident not found")
@@ -223,13 +327,21 @@ async def explain_error(incident_id: str):
     cursor.close()
     return _call_llm_explanation(error_msg, error_code, workflow)
 
-# ---------- Generate Fix Patch ----------
-def _generate_fix_patch_llm(definition, error_msg, error_category):
-    # Placeholder – replace with actual LLM call that returns structured fix plan
+
+def _generate_fix_patch_llm(_definition, _error_msg, error_category):
     return {
         "summary": f"Fix for {error_category}",
-        "steps": [{"step_number": 1, "title": "Update expression", "description": "Add null check to contains()", "sub_steps": ["Change contains() to coalesce(...)"], "note": "Test after deployment"}]
+        "steps": [
+            {
+                "step_number": 1,
+                "title": "Update expression",
+                "description": "Add null check to contains()",
+                "sub_steps": ["Change contains() to coalesce(...)"],
+                "note": "Test after deployment",
+            }
+        ],
     }
+
 
 @router.post("/monitor/generate-fix/{incident_id}")
 async def generate_fix_patch(incident_id: str):
@@ -237,38 +349,47 @@ async def generate_fix_patch(incident_id: str):
     if not client:
         raise HTTPException(503, "Database unavailable")
     cursor = client.conn.cursor()
-    cursor.execute(f"SELECT WORKFLOW_NAME, SUBSCRIPTION_ID, ERROR_MESSAGE, ERROR_CATEGORY FROM {client.full_table} WHERE INCIDENT_ID = ?", (incident_id,))
+    cursor.execute(
+        f"SELECT WORKFLOW_NAME, SUBSCRIPTION_ID, ERROR_MESSAGE, ERROR_CATEGORY FROM {client.full_table} WHERE INCIDENT_ID = ?",
+        (incident_id,),
+    )
     row = cursor.fetchone()
     if not row:
         raise HTTPException(404, "Incident not found")
     workflow_name, sub_id, error_msg, error_category = row
     cursor.close()
-    
+
     token = get_arm_token(settings.tenant_id, settings.client_id, settings.client_secret)
     wf = get_workflow(token, sub_id, settings.resource_group, workflow_name)
     definition = wf.get("properties", {}).get("definition", {})
-    
+
     fix_patch = _generate_fix_patch_llm(definition, error_msg, error_category)
     cursor = client.conn.cursor()
-    cursor.execute(f"UPDATE {client.full_table} SET AI_FIX_PATCH = ? WHERE INCIDENT_ID = ?", (json.dumps(fix_patch), incident_id))
+    cursor.execute(
+        f"UPDATE {client.full_table} SET AI_FIX_PATCH = ? WHERE INCIDENT_ID = ?",
+        (json.dumps(fix_patch), incident_id),
+    )
     client.conn.commit()
     cursor.close()
     return fix_patch
 
-# ---------- Apply Fix ----------
+
 @router.post("/monitor/apply-fix/{incident_id}")
-async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
+async def apply_message_fix(incident_id: str, _req: ApplyFixRequest):
     client = get_client()
     if not client:
         raise HTTPException(503, "Database unavailable")
     cursor = client.conn.cursor()
-    cursor.execute(f"SELECT WORKFLOW_NAME, SUBSCRIPTION_ID, ERROR_CATEGORY, ERROR_MESSAGE FROM {client.full_table} WHERE INCIDENT_ID = ?", (incident_id,))
+    cursor.execute(
+        f"SELECT WORKFLOW_NAME, SUBSCRIPTION_ID, ERROR_CATEGORY, ERROR_MESSAGE FROM {client.full_table} WHERE INCIDENT_ID = ?",
+        (incident_id,),
+    )
     row = cursor.fetchone()
     if not row:
         raise HTTPException(404, "Incident not found")
-    workflow_name, sub_id, error_category, error_msg = row
+    workflow_name, sub_id, _error_category, _error_msg = row
     cursor.close()
-    
+
     result = run_remediation(
         subscription_id=sub_id,
         resource_group=settings.resource_group,
@@ -280,17 +401,23 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     )
     new_status = "AUTO_FIXED" if result.get("status") == "remediated" else "FIX_FAILED"
     cursor = client.conn.cursor()
-    cursor.execute(f"UPDATE {client.full_table} SET STATUS = ?, AUTO_FIX_ATTEMPTED = TRUE, AUTO_FIX_SUCCESS = ? WHERE INCIDENT_ID = ?", (new_status, new_status == "AUTO_FIXED", incident_id))
+    cursor.execute(
+        f"UPDATE {client.full_table} SET STATUS = ?, AUTO_FIX_ATTEMPTED = TRUE, AUTO_FIX_SUCCESS = ? WHERE INCIDENT_ID = ?",
+        (new_status, new_status == "AUTO_FIXED", incident_id),
+    )
     client.conn.commit()
     cursor.close()
     return {"status": new_status, "summary": result.get("fix_applied", "")}
 
-# ---------- Fix Status Polling ----------
+
 @router.get("/monitor/fix-status/{incident_id}")
 async def get_fix_status(incident_id: str):
     client = get_client()
     cursor = client.conn.cursor()
-    cursor.execute(f"SELECT STATUS, AUTO_FIX_SUCCESS, FIX_STRATEGY FROM {client.full_table} WHERE INCIDENT_ID = ?", (incident_id,))
+    cursor.execute(
+        f"SELECT STATUS, AUTO_FIX_SUCCESS, FIX_STRATEGY FROM {client.full_table} WHERE INCIDENT_ID = ?",
+        (incident_id,),
+    )
     row = cursor.fetchone()
     if not row:
         raise HTTPException(404, "Incident not found")
@@ -302,35 +429,39 @@ async def get_fix_status(incident_id: str):
         "current_step": "Completed" if success else "Failed",
         "step_index": 5 if success else 0,
         "total_steps": 5,
-        "steps_done": ["Submit", "Get iFlow", "Validate", "Patch", "Deploy"] if success else []
+        "steps_done": ["Submit", "Get iFlow", "Validate", "Patch", "Deploy"] if success else [],
     }
 
-# ---------- Tickets (Stubs) ----------
+
 @router.get("/tickets")
 async def get_tickets():
     return {"tickets": []}
 
+
 @router.post("/tickets/{ticket_id}/update")
-async def update_ticket(ticket_id: str, req: UpdateTicketRequest):
+async def update_ticket(_ticket_id: str, _req: UpdateTicketRequest):
     return {"status": "updated"}
 
-# ---------- Approvals (Stubs) ----------
+
 @router.get("/approvals/pending")
 async def get_pending_approvals():
     return {"pending": []}
 
+
 @router.post("/approvals/{incident_id}/approve")
-async def approve_incident(incident_id: str, req: ApproveIncidentRequest):
+async def approve_incident(_incident_id: str, _req: ApproveIncidentRequest):
     return {"status": "processed"}
 
-# ---------- Event Mesh Stubs ----------
+
 @router.get("/aem/status")
 async def aem_status():
     return {"event_mesh_enabled": True, "messages_retrieved": 0, "total_incidents": 0, "queue_depth": 0}
 
+
 @router.get("/aem/incidents")
 async def aem_incidents(limit: int = 100):
     return {"incidents": []}
+
 
 @router.get("/mcp/tools")
 async def mcp_tools():

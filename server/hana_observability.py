@@ -1,23 +1,33 @@
 """
-HANA Observability Module – Direct INSERT/UPDATE using fully qualified table name.
+HANA Observability Module - Direct INSERT/UPDATE using fully qualified table name.
 """
 import os
 import logging
 import time
-from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 try:
     from hdbcli import dbapi
+
     HDBCLI_AVAILABLE = True
 except ImportError:
     HDBCLI_AVAILABLE = False
     logger.warning("hdbcli not installed. Install: pip install hdbcli")
 
+
 class HANAObservabilityClient:
-    def __init__(self, host: str, port: int, user: str, password: str, schema: str, table: str = "LOGIC_APPS_OBSERVABILITY"):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        user: str,
+        password: str,
+        schema: str,
+        table: str = "LOGIC_APPS_OBSERVABILITY",
+    ):
         self.host = host
         self.port = port
         self.user = user
@@ -40,12 +50,12 @@ class HANAObservabilityClient:
                     password=self.password,
                     encrypt=True,
                     sslValidateCertificate=False,
-                    timeout=30
+                    timeout=30,
                 )
                 logger.info(f"Connected to HANA {self.host}:{self.port}")
                 return True
             except Exception as e:
-                logger.warning(f"Connection attempt {attempt+1} failed: {e}")
+                logger.warning(f"Connection attempt {attempt + 1} failed: {e}")
                 time.sleep(2)
         return False
 
@@ -57,7 +67,7 @@ class HANAObservabilityClient:
             cursor.execute("SELECT 1 FROM DUMMY")
             cursor.close()
             return True
-        except:
+        except Exception:
             self.conn = None
             return self._connect()
 
@@ -102,21 +112,18 @@ class HANAObservabilityClient:
             return False
         cursor = self.conn.cursor()
         try:
-            # Check if table exists by trying to select 1 row
             cursor.execute(f"SELECT 1 FROM {self.full_table} LIMIT 1")
             exists = True
-        except:
+        except Exception:
             exists = False
         finally:
             cursor.close()
 
         if exists:
             logger.info(f"Table {self.full_table} already exists")
-            # Run migration to add any missing columns
             self.migrate_table()
             return True
 
-        # Table does not exist, create it
         cursor = self.conn.cursor()
         try:
             create_sql = f"""
@@ -148,7 +155,7 @@ class HANAObservabilityClient:
             """
             cursor.execute(create_sql)
             self.conn.commit()
-            logger.info(f"✓ Created table {self.full_table}")
+            logger.info(f"Created table {self.full_table}")
             cursor.close()
             return True
         except Exception as e:
@@ -178,30 +185,34 @@ class HANAObservabilityClient:
                         PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
-                cursor.execute(sql, (
-                    rec.get("incident_id"),
-                    rec.get("subscription_id"),
-                    rec.get("workflow_name"),
-                    rec.get("error_code", "unknown"),
-                    (rec.get("error_message") or "")[:2000],
-                    rec.get("error_category", "UNKNOWN_ERROR"),
-                    rec.get("status", "Ticket Created"),
-                    (rec.get("rca_root_cause") or "")[:4000] if rec.get("rca_root_cause") else None,
-                    (rec.get("fix_strategy") or "")[:256] if rec.get("fix_strategy") else None,
-                    now, now,
-                    rec.get("auto_fix_attempted", False),
-                    rec.get("auto_fix_success", False),
-                    rec.get("retry_count", 0),
-                    rec.get("ai_diagnosis"),
-                    rec.get("ai_proposed_fix"),
-                    rec.get("ai_confidence"),
-                    rec.get("ai_fix_patch"),
-                    rec.get("field_changes"),
-                    rec.get("history_entries"),
-                    rec.get("properties_json"),
-                    rec.get("artifact_json"),
-                    rec.get("error_details_json")
-                ))
+                cursor.execute(
+                    sql,
+                    (
+                        rec.get("incident_id"),
+                        rec.get("subscription_id"),
+                        rec.get("workflow_name"),
+                        rec.get("error_code", "unknown"),
+                        (rec.get("error_message") or "")[:2000],
+                        rec.get("error_category", "UNKNOWN_ERROR"),
+                        rec.get("status", "Ticket Created"),
+                        (rec.get("rca_root_cause") or "")[:4000] if rec.get("rca_root_cause") else None,
+                        (rec.get("fix_strategy") or "")[:256] if rec.get("fix_strategy") else None,
+                        now,
+                        now,
+                        rec.get("auto_fix_attempted", False),
+                        rec.get("auto_fix_success", False),
+                        rec.get("retry_count", 0),
+                        rec.get("ai_diagnosis"),
+                        rec.get("ai_proposed_fix"),
+                        rec.get("ai_confidence"),
+                        rec.get("ai_fix_patch"),
+                        rec.get("field_changes"),
+                        rec.get("history_entries"),
+                        rec.get("properties_json"),
+                        rec.get("artifact_json"),
+                        rec.get("error_details_json"),
+                    ),
+                )
                 inserted += 1
             except dbapi.IntegrityError:
                 update_sql = f"""
@@ -229,30 +240,33 @@ class HANAObservabilityClient:
                         ERROR_DETAILS_JSON = COALESCE(ERROR_DETAILS_JSON, ?)
                     WHERE INCIDENT_ID = ?
                 """
-                cursor.execute(update_sql, (
-                    rec.get("subscription_id"),
-                    rec.get("workflow_name"),
-                    rec.get("error_code", "unknown"),
-                    (rec.get("error_message") or "")[:2000],
-                    rec.get("error_category", "UNKNOWN_ERROR"),
-                    rec.get("status", "Ticket Created"),
-                    (rec.get("rca_root_cause") or "")[:4000] if rec.get("rca_root_cause") else None,
-                    (rec.get("fix_strategy") or "")[:256] if rec.get("fix_strategy") else None,
-                    now,
-                    rec.get("auto_fix_attempted", False),
-                    rec.get("auto_fix_success", False),
-                    rec.get("retry_count", 0),
-                    rec.get("ai_diagnosis"),
-                    rec.get("ai_proposed_fix"),
-                    rec.get("ai_confidence"),
-                    rec.get("ai_fix_patch"),
-                    rec.get("field_changes"),
-                    rec.get("history_entries"),
-                    rec.get("properties_json"),
-                    rec.get("artifact_json"),
-                    rec.get("error_details_json"),
-                    rec.get("incident_id")
-                ))
+                cursor.execute(
+                    update_sql,
+                    (
+                        rec.get("subscription_id"),
+                        rec.get("workflow_name"),
+                        rec.get("error_code", "unknown"),
+                        (rec.get("error_message") or "")[:2000],
+                        rec.get("error_category", "UNKNOWN_ERROR"),
+                        rec.get("status", "Ticket Created"),
+                        (rec.get("rca_root_cause") or "")[:4000] if rec.get("rca_root_cause") else None,
+                        (rec.get("fix_strategy") or "")[:256] if rec.get("fix_strategy") else None,
+                        now,
+                        rec.get("auto_fix_attempted", False),
+                        rec.get("auto_fix_success", False),
+                        rec.get("retry_count", 0),
+                        rec.get("ai_diagnosis"),
+                        rec.get("ai_proposed_fix"),
+                        rec.get("ai_confidence"),
+                        rec.get("ai_fix_patch"),
+                        rec.get("field_changes"),
+                        rec.get("history_entries"),
+                        rec.get("properties_json"),
+                        rec.get("artifact_json"),
+                        rec.get("error_details_json"),
+                        rec.get("incident_id"),
+                    ),
+                )
                 inserted += 1
             except Exception as e:
                 logger.error(f"Failed to process {rec.get('incident_id')}: {e}")
@@ -263,50 +277,68 @@ class HANAObservabilityClient:
         logger.info(f"Processed {len(records)} records: {inserted} inserted/updated, {failed} failed")
         return inserted, failed
 
-    def get_dashboard_stats(self, start_date: datetime, end_date: datetime, subscription_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_dashboard_stats(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        subscription_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         if not self._ensure_connected():
             return {"error": "HANA connection failed"}
 
-        where = [f"UPDATED_AT >= '{start_date.isoformat()}'", f"UPDATED_AT <= '{end_date.isoformat()}'"]
+        params: List[Any] = [start_date, end_date]
+        where_parts = ["UPDATED_AT >= ?", "UPDATED_AT <= ?"]
         if subscription_id:
-            where.append(f"SUBSCRIPTION_ID = '{subscription_id}'")
-        where_clause = " AND ".join(where)
+            where_parts.append("SUBSCRIPTION_ID = ?")
+            params.append(subscription_id)
+        where_clause = " AND ".join(where_parts)
 
         cursor = self.conn.cursor()
         try:
-            cursor.execute(f"SELECT COUNT(*) FROM {self.full_table} WHERE {where_clause}")
+            cursor.execute(f"SELECT COUNT(*) FROM {self.full_table} WHERE {where_clause}", params)
             total = cursor.fetchone()[0]
 
-            cursor.execute(f"""
-                SELECT 
+            cursor.execute(
+                f"""
+                SELECT
                     SUM(CASE WHEN AUTO_FIX_ATTEMPTED = TRUE THEN 1 ELSE 0 END),
                     SUM(CASE WHEN AUTO_FIX_SUCCESS = TRUE THEN 1 ELSE 0 END)
                 FROM {self.full_table} WHERE {where_clause}
-            """)
+                """,
+                params,
+            )
             attempted, succeeded = cursor.fetchone()
             attempted = attempted or 0
             succeeded = succeeded or 0
             auto_fix_rate = (succeeded / attempted * 100) if attempted > 0 else 0
 
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                 SELECT ERROR_CATEGORY, COUNT(*) FROM {self.full_table}
                 WHERE {where_clause} GROUP BY ERROR_CATEGORY ORDER BY 2 DESC
-            """)
+                """,
+                params,
+            )
             error_dist = {row[0]: row[1] for row in cursor.fetchall()}
 
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                 SELECT STATUS, COUNT(*) FROM {self.full_table}
                 WHERE {where_clause} GROUP BY STATUS ORDER BY 2 DESC
-            """)
+                """,
+                params,
+            )
             status_dist = {row[0]: row[1] for row in cursor.fetchall()}
 
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                 SELECT WORKFLOW_NAME, COUNT(*) FROM {self.full_table}
                 WHERE {where_clause} GROUP BY WORKFLOW_NAME ORDER BY 2 DESC LIMIT 10
-            """)
+                """,
+                params,
+            )
             top_workflows = [(row[0], row[1]) for row in cursor.fetchall()]
 
-            cursor.close()
             return {
                 "total_incidents": total,
                 "auto_fix_attempted": attempted,
@@ -316,42 +348,25 @@ class HANAObservabilityClient:
                 "status_distribution": status_dist,
                 "top_failing_workflows": top_workflows,
                 "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat()
+                "end_date": end_date.isoformat(),
             }
         except Exception as e:
             logger.error(f"Dashboard stats error: {e}")
             return {"error": str(e)}
+        finally:
+            cursor.close()
 
     def close(self):
         if self.conn:
             self.conn.close()
 
 
-def get_hana_client(settings):
-    if not HDBCLI_AVAILABLE:
-        return None
-    host = getattr(settings, 'hana_host', None) or os.getenv('HANA_HOST')
-    port = getattr(settings, 'hana_port', 443) or int(os.getenv('HANA_PORT', 443))
-    user = getattr(settings, 'hana_user', None) or os.getenv('HANA_USER')
-    pwd = getattr(settings, 'hana_password', None) or os.getenv('HANA_PASSWORD')
-    schema = getattr(settings, 'hana_schema', None) or os.getenv('HANA_SCHEMA')
-    if not all([host, user, pwd, schema]):
-        logger.warning("HANA credentials missing")
-        return None
-    table = getattr(settings, 'hana_observability_table', None) or os.getenv('HANA_OBSERVABILITY_TABLE', 'LOGIC_APPS_OBSERVABILITY')
-    client = HANAObservabilityClient(host, port, user, pwd, schema, table)
-    # Ensure table exists and is migrated
-    client.create_table()
-    return client
-
-# Global singleton instance
 _global_client = None
 
+
 def get_global_client():
-    """Singleton: create and return one HANA client that lives for the lifetime of the app."""
     global _global_client
     if _global_client is not None:
-        # Ensure connection is still alive; if not, reconnect
         if not _global_client._ensure_connected():
             _global_client._connect()
         return _global_client
@@ -361,24 +376,28 @@ def get_global_client():
         return None
 
     from config import get_settings
-    settings = get_settings()
 
-    host = getattr(settings, 'hana_host', None) or os.getenv('HANA_HOST')
-    port = getattr(settings, 'hana_port', 443) or int(os.getenv('HANA_PORT', 443))
-    user = getattr(settings, 'hana_user', None) or os.getenv('HANA_USER')
-    pwd = getattr(settings, 'hana_password', None) or os.getenv('HANA_PASSWORD')
-    schema = getattr(settings, 'hana_schema', None) or os.getenv('HANA_SCHEMA')
+    settings = get_settings()
+    host = getattr(settings, "hana_host", None) or os.getenv("HANA_HOST")
+    port = getattr(settings, "hana_port", 443) or int(os.getenv("HANA_PORT", 443))
+    user = getattr(settings, "hana_user", None) or os.getenv("HANA_USER")
+    pwd = getattr(settings, "hana_password", None) or os.getenv("HANA_PASSWORD")
+    schema = getattr(settings, "hana_schema", None) or os.getenv("HANA_SCHEMA")
     if not all([host, user, pwd, schema]):
-        logger.error("HANA credentials missing – cannot create client")
+        logger.error("HANA credentials missing - cannot create client")
         return None
 
-    table = getattr(settings, 'hana_observability_table', None) or os.getenv('HANA_OBSERVABILITY_TABLE', 'LOGIC_APPS_OBSERVABILITY')
+    table = getattr(settings, "hana_observability_table", None) or os.getenv(
+        "HANA_OBSERVABILITY_TABLE", "LOGIC_APPS_OBSERVABILITY"
+    )
     _global_client = HANAObservabilityClient(host, port, user, pwd, schema, table)
-    _global_client.create_table()         # ensures table exists and runs migration once
+    _global_client.create_table()
     logger.info("Singleton HANA client created and table ensured")
     return _global_client
 
-# Legacy function – kept for backward compatibility, but now returns the global client
-def get_hana_client(settings):
-    logger.warning("Deprecated: get_hana_client() – use get_global_client() instead")
+
+def get_hana_client(_settings=None):
+    """Deprecated: use get_global_client(). Kept for callers that still pass settings."""
+    if _settings is not None:
+        logger.warning("get_hana_client(settings) is deprecated; use get_global_client() instead")
     return get_global_client()

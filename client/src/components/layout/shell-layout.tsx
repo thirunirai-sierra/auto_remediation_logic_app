@@ -77,8 +77,8 @@ export default function ShellLayout({ children }: ShellLayoutProps) {
           <span className={styles.logoMark}>O</span>
           {!collapsed && (
             <span className={styles.logoText}>
-              <span className={styles.logoTitle}>Orbit</span>
-              <span className={styles.logoSub}>Integration Suite</span>
+              <span className={styles.logoTitle}>Azure</span>
+              <span className={styles.logoSub}>Logic Apps</span>
             </span>
           )}
         </span>
