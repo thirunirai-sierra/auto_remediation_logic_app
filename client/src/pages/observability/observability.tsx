@@ -1,3 +1,7 @@
+/**
+ * @fileoverview Observability workspace: monitor message list/detail (HANA-backed APIs), AI analyze/explain/fix flows,
+ * tickets and approvals stubs, Error Type Guide, and Event Mesh sub-view (`EventMeshFlow`).
+ */
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import SvgIcon from "../../components/icons/SvgIcon.tsx";
@@ -30,11 +34,6 @@ import EventMeshFlow from "./EventMeshFlow.tsx";
 // ============================================================================
 // Utility functions
 // ============================================================================
-
-/** Normalize status string: uppercase, spaces to underscores */
-function normalizeStatus(raw: string): string {
-  return (raw || "").toUpperCase().replace(/ /g, "_");
-}
 
 /** Strip raw agent noise from fix_summary strings */
 function cleanFixSummary(raw: string): string {
@@ -133,6 +132,22 @@ const STATUS_CONFIG: Record<string, StatusCfg> = {
   RETRIED: { ...GREEN, label: "Retried" },
 };
 
+/** DB/API often returns spaced labels ("Ticket Created"); UI keys are SNAKE_CASE ("TICKET_CREATED"). */
+function normalizeStatusKey(status: string | undefined | null): string {
+  return (status ?? "").trim().toUpperCase().replace(/\s+/g, "_");
+}
+
+function StatusPill({ status }: { status: string }) {
+  const key = normalizeStatusKey(status);
+  const cfg = STATUS_CONFIG[key] ?? { ...GREY, label: status || "Unknown" };
+  return (
+    <span className={styles.statusPill} style={{ color: cfg.color, background: cfg.bg }}>
+      <span className={styles.statusDot} style={{ background: cfg.dot }} />
+      {cfg.label}
+    </span>
+  );
+}
+
 const TERMINAL_STATUSES = new Set([
   "AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "FIX_DEPLOYED",
   "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME",
@@ -146,19 +161,8 @@ const SUCCESS_STATUSES = new Set([
 ]);
 
 // ============================================================================
-// Components: StatusPill, TabBar, etc.
+// Components: TabBar, etc.
 // ============================================================================
-
-function StatusPill({ status }: { status: string }) {
-  const normalized = normalizeStatus(status);
-  const cfg = STATUS_CONFIG[normalized] ?? { ...GREY, label: status || "Unknown" };
-  return (
-    <span className={styles.statusPill} style={{ color: cfg.color, background: cfg.bg }}>
-      <span className={styles.statusDot} style={{ background: cfg.dot }} />
-      {cfg.label}
-    </span>
-  );
-}
 
 type TabKey = "error" | "ai" | "properties" | "artifact" | "attachments" | "history";
 
@@ -506,9 +510,13 @@ function ErrorExplanationCard({ exp }: { exp: IErrorExplanation }) {
 }
 
 // ============================================================================
-// Main Observability component
+// Main Observability component (messages, tickets, approvals, Event Mesh)
 // ============================================================================
 
+/**
+ * Root page state: tabs, filters, selected message, detail + AI/fix flows, and child `EventMeshFlow` when on Event Mesh tab.
+ * @returns {JSX.Element} Full observability page layout.
+ */
 export default function Observability() {
   const [mainTab, setMainTab] = useState<MainTabKey>("errortypeguide");
   const [filters, setFilters] = useState<IFilterState>(INITIAL_FILTERS);
@@ -556,20 +564,19 @@ export default function Observability() {
   });
 
   const STATUS_GROUP: Record<string, string[]> = {
-    FAILED: ["FAILED", "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME", "RCA_FAILED", "PIPELINE_ERROR", "DETECTED", "ARTIFACT_MISSING"],
-    SUCCESS: ["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "SUCCESS", "HUMAN_INITIATED_FIX", "FIX_DEPLOYED"],
-    PROCESSING: ["RCA_IN_PROGRESS", "FIX_IN_PROGRESS", "CLASSIFIED", "RCA_COMPLETE", "FIX_APPLIED_PENDING_VERIFICATION", "PROCESSING"],
-    RETRY: ["RETRY", "PENDING_APPROVAL", "TICKET_CREATED", "AWAITING_APPROVAL"],
+    FAILED:     ["FAILED", "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME", "RCA_FAILED", "PIPELINE_ERROR", "DETECTED", "ARTIFACT_MISSING"],
+    SUCCESS:    ["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "SUCCESS", "HUMAN_INITIATED_FIX", "FIX_DEPLOYED"],
+    PROCESSING: ["RCA_IN_PROGRESS", "FIX_IN_PROGRESS", "FIX_ATTEMPTED", "CLASSIFIED", "RCA_COMPLETE", "FIX_APPLIED_PENDING_VERIFICATION", "PROCESSING"],
+    RETRY:      ["RETRY", "PENDING_APPROVAL", "TICKET_CREATED", "AWAITING_APPROVAL"],
   };
 
   // Normalized messages with status filtering (spaces -> underscores)
   const messages = useMemo(() => {
-    const rawMessages = (data?.messages || []) as IMonitorMessage[];
-    return rawMessages.filter((m) => {
-      const normalizedStatus = normalizeStatus(m.status || "");
+    return ((data?.messages || []) as IMonitorMessage[]).filter((m) => {
+      const s = normalizeStatusKey(m.status);
       if (filters.statuses.length) {
         const allowed = filters.statuses.flatMap((g) => STATUS_GROUP[g] || [g]);
-        if (!allowed.includes(normalizedStatus)) return false;
+        if (!allowed.includes(s)) return false;
       }
       if (filters.searchQuery) {
         const q = filters.searchQuery.toLowerCase();
@@ -586,19 +593,24 @@ export default function Observability() {
 
   // Counts for summary cards (normalized statuses)
   const counts = useMemo(() => {
+    const s = data?.summary as { FAILED?: number; SUCCESS?: number; PROCESSING?: number; RETRY?: number } | undefined;
+    if (
+      s &&
+      typeof s.FAILED === "number" &&
+      typeof s.SUCCESS === "number" &&
+      typeof s.PROCESSING === "number" &&
+      typeof s.RETRY === "number"
+    ) {
+      return { FAILED: s.FAILED, SUCCESS: s.SUCCESS, PROCESSING: s.PROCESSING, RETRY: s.RETRY };
+    }
     const all = (data?.messages || []) as IMonitorMessage[];
     const result: Record<string, number> = { FAILED: 0, SUCCESS: 0, PROCESSING: 0, RETRY: 0 };
     all.forEach((m) => {
-      const s = normalizeStatus(m.status || "");
-      if (["FAILED", "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME", "RCA_FAILED", "PIPELINE_ERROR", "DETECTED", "ARTIFACT_MISSING"].includes(s)) {
-        result.FAILED++;
-      } else if (["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "SUCCESS", "HUMAN_INITIATED_FIX", "FIX_DEPLOYED"].includes(s)) {
-        result.SUCCESS++;
-      } else if (["RCA_IN_PROGRESS", "FIX_IN_PROGRESS", "CLASSIFIED", "RCA_COMPLETE", "FIX_APPLIED_PENDING_VERIFICATION", "PROCESSING"].includes(s)) {
-        result.PROCESSING++;
-      } else if (["RETRY", "PENDING_APPROVAL", "TICKET_CREATED", "AWAITING_APPROVAL"].includes(s)) {
-        result.RETRY++;
-      }
+      const st = normalizeStatusKey(m.status);
+      if (["FAILED", "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME", "RCA_FAILED", "PIPELINE_ERROR", "DETECTED", "ARTIFACT_MISSING"].includes(st)) result.FAILED++;
+      else if (["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "SUCCESS", "HUMAN_INITIATED_FIX", "FIX_DEPLOYED"].includes(st)) result.SUCCESS++;
+      else if (["RCA_IN_PROGRESS", "FIX_IN_PROGRESS", "FIX_ATTEMPTED", "CLASSIFIED", "RCA_COMPLETE", "FIX_APPLIED_PENDING_VERIFICATION", "PROCESSING"].includes(st)) result.PROCESSING++;
+      else if (["RETRY", "PENDING_APPROVAL", "TICKET_CREATED", "AWAITING_APPROVAL"].includes(st)) result.RETRY++;
     });
     return result;
   }, [data]);
@@ -681,6 +693,105 @@ export default function Observability() {
     }
   }, [refetchTickets]);
 
+  /* ── Select a message and load full detail ─────────────────────────── */
+  const handleSelect = useCallback(async (msg: IMonitorMessage) => {
+    const guid = msg.message_guid;
+    if (!guid) return;
+    // Cancel any running fix poll for the previous message
+    pollAbortRef.current.cancelled = true;
+    setSelectedGuid(guid);
+    setSelectedMsg(msg);
+    setDetail(null);
+    setFixPatch(null);
+    setFixState("idle");
+    setFixResult("");
+    setFixProgress(null);
+    setActiveTab("error");
+    setErrorExplain(null);
+    setErrorExplainLoading(false);
+    setErrorExplainErr(null);
+    setDetailLoading(true);
+    try {
+      const d = await fetchMonitorMessageDetail(guid) as IMessageDetail;
+      setDetail(d);
+
+      // Restore previously generated fix plan from DB
+      if (d.ai_recommendation?.fix_patch) {
+        setFixPatch(d.ai_recommendation.fix_patch);
+      }
+
+      // Restore fix outcome state from incident status
+      const incStatus = normalizeStatusKey(d.incident_status);
+      if (incStatus === "HUMAN_INITIATED_FIX") {
+        setFixState("skipped");
+        setFixResult(d.ai_recommendation?.fix_summary || "iFlow was already running — no changes were applied.");
+      } else if (incStatus === "FIX_DEPLOYED") {
+        setFixState("deployed_unverified");
+        setFixResult(d.ai_recommendation?.fix_summary || "Fix deployed but XML validation had warnings — verify the iFlow manually.");
+      } else if (["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED"].includes(incStatus)) {
+        setFixState("success");
+        setFixResult(d.ai_recommendation?.fix_summary || "Fix applied and deployed successfully.");
+      } else if (["FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME"].includes(incStatus)) {
+        setFixState("error");
+        setFixResult(d.ai_recommendation?.fix_summary || "Fix failed — see history for details.");
+      }
+
+      if (d.ai_recommendation?.diagnosis) {
+        setActiveTab("ai");
+      }
+    } catch {
+      // Keep previous state
+    } finally {
+      setDetailLoading(false);
+    }
+  }, []);
+
+  /* ── Run / re-run AI analysis ──────────────────────────────────────── */
+  const handleAnalyze = useCallback(async () => {
+    if (!selectedGuid) return;
+    setAnalyzeLoading(true);
+    try {
+      await analyzeMessage(selectedGuid);
+      const d = await fetchMonitorMessageDetail(selectedGuid) as IMessageDetail;
+      setDetail(d);
+      setActiveTab("ai");
+    } catch {
+      // handled
+    } finally {
+      setAnalyzeLoading(false);
+    }
+  }, [selectedGuid]);
+
+  /* ── Explain error ─────────────────────────────────────────────────── */
+  const handleExplainError = useCallback(async () => {
+    if (!selectedGuid) return;
+    setErrorExplainLoading(true);
+    setErrorExplainErr(null);
+    try {
+      const exp = await explainError(selectedGuid) as IErrorExplanation;
+      setErrorExplain(exp);
+    } catch (e) {
+      setErrorExplainErr(e instanceof Error ? e.message : "Failed to explain error");
+    } finally {
+      setErrorExplainLoading(false);
+    }
+  }, [selectedGuid]);
+
+  /* ── Generate fix patch ────────────────────────────────────────────── */
+  const handleGenerateFixPatch = useCallback(async () => {
+    if (!selectedGuid) return;
+    setFixPatchLoading(true);
+    try {
+      const patch = await generateFixPatch(selectedGuid) as IFixPatchResponse;
+      setFixPatch(patch);
+    } catch {
+      // handled
+    } finally {
+      setFixPatchLoading(false);
+    }
+  }, [selectedGuid]);
+
+  /* ── Live fix polling (shared by handleApplyFix and auto-resume) ──── */
   const pollAbortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
 
   const startFixPolling = useCallback(async (incidentId: string) => {
@@ -690,7 +801,9 @@ export default function Observability() {
       await new Promise((r) => setTimeout(r, 5000));
       try {
         const s = await fetchFixStatus(incidentId) as Record<string, unknown>;
-        const st = (s.status as string || "").toUpperCase();
+        const st = normalizeStatusKey(s.status as string);
+
+        // Update the live step progress from the backend
         setFixProgress({
           currentStep: (s.current_step as string) || st,
           stepIndex: (s.step_index as number) || 1,
@@ -739,7 +852,8 @@ export default function Observability() {
       const proposedFix = fixPatch?.summary_structured?.proposed_fix || detail?.ai_recommendation?.proposed_fix || undefined;
       const result = await applyMessageFix(selectedGuid, "user", proposedFix, isForce) as Record<string, unknown>;
       const incidentId = (result.incident_id as string) || detail?.incident_id || "";
-      const syncStatus = (result.status as string || "").toUpperCase();
+
+      const syncStatus = normalizeStatusKey(result.status as string);
       const syncFixApplied = result.fix_applied === true;
       const syncDeploy = result.deploy_success === true;
       if (syncStatus === "HUMAN_INITIATED_FIX") {
@@ -800,97 +914,18 @@ export default function Observability() {
     await startFixPolling(incidentId);
   }, [detail, startFixPolling]);
 
-  const handleSelect = useCallback(async (msg: IMonitorMessage) => {
-    const guid = msg.message_guid;
-    if (!guid) return;
-    pollAbortRef.current.cancelled = true;
-    setSelectedGuid(guid);
-    setSelectedMsg(msg);
-    setDetail(null);
-    setFixPatch(null);
-    setFixState("idle");
-    setFixResult("");
-    setFixProgress(null);
-    setActiveTab("error");
-    setErrorExplain(null);
-    setErrorExplainLoading(false);
-    setErrorExplainErr(null);
-    setDetailLoading(true);
-    try {
-      const d = await fetchMonitorMessageDetail(guid) as IMessageDetail;
-      setDetail(d);
-      if (d.ai_recommendation?.fix_patch) setFixPatch(d.ai_recommendation.fix_patch);
-      const incStatus = (d.incident_status || "").toUpperCase();
-      if (incStatus === "HUMAN_INITIATED_FIX") {
-        setFixState("skipped");
-        setFixResult(d.ai_recommendation?.fix_summary || "iFlow was already running — no changes were applied.");
-      } else if (incStatus === "FIX_DEPLOYED") {
-        setFixState("deployed_unverified");
-        setFixResult(d.ai_recommendation?.fix_summary || "Fix deployed but XML validation had warnings — verify the iFlow manually.");
-      } else if (["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED"].includes(incStatus)) {
-        setFixState("success");
-        setFixResult(d.ai_recommendation?.fix_summary || "Fix applied and deployed successfully.");
-      } else if (["FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME"].includes(incStatus)) {
-        setFixState("error");
-        setFixResult(d.ai_recommendation?.fix_summary || "Fix failed — see history for details.");
-      }
-      if (d.ai_recommendation?.diagnosis) setActiveTab("ai");
-    } catch {
-      // keep previous state
-    } finally {
-      setDetailLoading(false);
-    }
-  }, []);
-
-  const handleAnalyze = useCallback(async () => {
-    if (!selectedGuid) return;
-    setAnalyzeLoading(true);
-    try {
-      await analyzeMessage(selectedGuid);
-      const d = await fetchMonitorMessageDetail(selectedGuid) as IMessageDetail;
-      setDetail(d);
-      setActiveTab("ai");
-    } catch {
-      // handled
-    } finally {
-      setAnalyzeLoading(false);
-    }
-  }, [selectedGuid]);
-
-  const handleExplainError = useCallback(async () => {
-    if (!selectedGuid) return;
-    setErrorExplainLoading(true);
-    setErrorExplainErr(null);
-    try {
-      const exp = await explainError(selectedGuid) as IErrorExplanation;
-      setErrorExplain(exp);
-    } catch (e) {
-      setErrorExplainErr(e instanceof Error ? e.message : "Failed to explain error");
-    } finally {
-      setErrorExplainLoading(false);
-    }
-  }, [selectedGuid]);
-
-  const handleGenerateFixPatch = useCallback(async () => {
-    if (!selectedGuid) return;
-    setFixPatchLoading(true);
-    try {
-      const patch = await generateFixPatch(selectedGuid) as IFixPatchResponse;
-      setFixPatch(patch);
-    } catch {
-      // handled
-    } finally {
-      setFixPatchLoading(false);
-    }
-  }, [selectedGuid]);
-
   useEffect(() => {
     if (!detail) return;
-    const st = (detail.status || "").toUpperCase();
+    const st = normalizeStatusKey(detail.status);
     const incidentId = detail.incident_id || "";
     if (fixState !== "idle") return;
-    if (["FIX_IN_PROGRESS", "RCA_IN_PROGRESS", "FIX_APPLIED_PENDING_VERIFICATION"].includes(st)) {
-      const stepLabel = st === "RCA_IN_PROGRESS" ? "Analyzing root cause…" : st === "FIX_APPLIED_PENDING_VERIFICATION" ? "Verifying fix…" : "Fix in progress…";
+
+    if (["FIX_IN_PROGRESS", "RCA_IN_PROGRESS", "FIX_APPLIED_PENDING_VERIFICATION", "FIX_ATTEMPTED", "PROCESSING"].includes(st)) {
+      const stepLabel =
+        st === "RCA_IN_PROGRESS"                   ? "Analyzing root cause…" :
+        st === "FIX_APPLIED_PENDING_VERIFICATION"  ? "Verifying fix…" :
+        st === "FIX_ATTEMPTED"                     ? "Fix attempt in progress…" :
+                                                     "Fix in progress…";
       setFixState("loading");
       setFixProgress({ currentStep: stepLabel, stepIndex: 0, totalSteps: 5, stepsDone: [] });
       if (incidentId) {
@@ -904,7 +939,7 @@ export default function Observability() {
       setFixState("error");
       setFixResult(detail.ai_recommendation?.fix_summary || "Fix failed.");
     }
-  }, [detail]);
+  }, [detail, fixState, startFixPolling]);
 
   useEffect(() => {
     return () => { pollAbortRef.current.cancelled = true; };
@@ -976,74 +1011,96 @@ export default function Observability() {
           </div>
         )}
 
-        {/* Two-column layout */}
-        <div className={styles.columns}>
-          {/* Message list */}
-          <div className={`${styles.listCol} ${selectedGuid ? styles.listColNarrow : ""}`}>
-            <div className={styles.listColHeader}>
-              <span className={styles.listColTitle}>List Heading</span>
-              <div className={styles.listColControls}>
-                <div className={styles.listColSearch}>
-                  <span className={styles.listColSearchIcon}>🔍</span>
-                  <input
-                    className={styles.listColSearchInput}
-                    placeholder="search message ID / iflow name"
-                    value={filters.idQuery}
-                    onChange={(e) => setFilters((f) => ({ ...f, idQuery: e.target.value }))}
-                  />
+          {/* ── Two-column layout ── */}
+          <div className={styles.columns}>
+            {/* Message list */}
+            <div className={`${styles.listCol} ${selectedGuid ? styles.listColNarrow : ""}`}>
+              <div className={styles.listColHeader}>
+                <span className={styles.listColTitle}>List Heading</span>
+                <div className={styles.listColControls}>
+                  <div className={styles.listColSearch}>
+                    <span className={styles.listColSearchIcon}>🔍</span>
+                    <input
+                      className={styles.listColSearchInput}
+                      placeholder="search message ID / iflow name"
+                      value={filters.idQuery}
+                      onChange={(e) => setFilters((f) => ({ ...f, idQuery: e.target.value }))}
+                    />
+                  </div>
+                  <select
+                    className={styles.listColStatusSelect}
+                    value=""
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (!v) return;
+                      setFilters((f) => ({ ...f, statuses: f.statuses.includes(v) ? f.statuses.filter((s) => s !== v) : [...f.statuses, v] }));
+                    }}
+                  >
+                    <option value="">Status</option>
+                    {Object.entries(STATUS_CONFIG).map(([k, c]) => <option key={k} value={k}>{c.label}</option>)}
+                  </select>
+                  <button className={styles.listColRefreshBtn} onClick={() => refetch()} disabled={isFetching}>
+                    Refresh
+                  </button>
+                  <button className={styles.listColResetBtn} onClick={() => setFilters(INITIAL_FILTERS)}>Reset</button>
                 </div>
-                <select
-                  className={styles.listColStatusSelect}
-                  value=""
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (!v) return;
-                    setFilters((f) => ({ ...f, statuses: f.statuses.includes(v) ? f.statuses.filter((s) => s !== v) : [...f.statuses, v] }));
-                  }}
-                >
-                  <option value="">Status</option>
-                  {Object.entries(STATUS_CONFIG).map(([k, c]) => <option key={k} value={k}>{c.label}</option>)}
-                </select>
-                <button className={styles.listColRefreshBtn} onClick={() => refetch()} disabled={isFetching}>Refresh</button>
-                <button className={styles.listColResetBtn} onClick={() => setFilters(INITIAL_FILTERS)}>Reset</button>
               </div>
+              {isLoading ? (
+                <div className={styles.centered}>
+                  <div className={styles.spinner} />
+                  <span>Loading messages...</span>
+                </div>
+              ) : messages.length === 0 ? (
+                <div className={styles.msgEmptyState}>
+                  <img src="/empty-messages.svg" alt="" className={styles.msgEmptyImg} draggable={false} />
+                  <p className={styles.msgEmptyTitle}>No messages found</p>
+                  <p className={styles.msgEmptyHint}>Errors detected by the autonomous monitor will appear here.</p>
+                </div>
+              ) : (
+                <div className={styles.messageList}>
+                  {messages.map((msg, i) => {
+                    const cfg = STATUS_CONFIG[normalizeStatusKey(msg.status)] ?? STATUS_CONFIG.FAILED;
+                    const isSelected = selectedGuid !== null && selectedGuid === msg.message_guid;
+                    return (
+                      <div
+                        key={msg.message_guid || i}
+                        className={`${styles.messageRow} ${isSelected ? styles.messageRowSelected : ""}`}
+                        style={{ borderLeft: `3px solid ${isSelected ? cfg.dot : "transparent"}` }}
+                      >
+                        <div className={styles.messageHeader}>
+                          <div className={styles.messageMain}>
+                            <span className={styles.messageName}>
+                              {msg.iflow_display || msg.title || "Unknown"}
+                            </span>
+                            <StatusPill status={msg.status} />
+                          </div>
+                          <button
+                            type="button"
+                            className={styles.messageOpenBtn}
+                            onClick={() => {
+                              if (isSelected) {
+                                setSelectedGuid(null);
+                                setSelectedMsg(null);
+                                setDetail(null);
+                                return;
+                              }
+                              handleSelect(msg);
+                            }}
+                            aria-label={`Open details for ${msg.iflow_display || msg.title || msg.message_guid || "message"}`}
+                            title={isSelected ? "Close details" : "Open details"}
+                          >
+                            <SvgIcon name="chevron-right" size={16} />
+                          </button>
+                        </div>
+                        <div className={styles.messageMeta}>
+                          <span className={styles.metaItem}>{msg.log_start || msg.updatedAt || "--"}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-            {isLoading ? (
-              <div className={styles.centered}>
-                <div className={styles.spinner} />
-                <span>Loading messages...</span>
-              </div>
-            ) : messages.length === 0 ? (
-              <div className={styles.msgEmptyState}>
-                <img src="/empty-messages.svg" alt="" className={styles.msgEmptyImg} draggable={false} />
-                <p className={styles.msgEmptyTitle}>No messages found</p>
-                <p className={styles.msgEmptyHint}>Errors detected by the autonomous monitor will appear here.</p>
-              </div>
-            ) : (
-              <div className={styles.messageList}>
-                {messages.map((msg, i) => {
-                  const cfg = STATUS_CONFIG[normalizeStatus(msg.status || "")] ?? STATUS_CONFIG.FAILED;
-                  const isSelected = selectedGuid !== null && selectedGuid === msg.message_guid;
-                  return (
-                    <div
-                      key={msg.message_guid || i}
-                      className={`${styles.messageRow} ${isSelected ? styles.messageRowSelected : ""}`}
-                      style={{ borderLeft: `3px solid ${isSelected ? cfg.dot : "transparent"}` }}
-                      onClick={() => handleSelect(msg)}
-                    >
-                      <div className={styles.messageMain}>
-                        <span className={styles.messageName}>{msg.iflow_display || msg.title || "Unknown"}</span>
-                        <StatusPill status={msg.status || "Unknown"} />
-                      </div>
-                      <div className={styles.messageMeta}>
-                        <span className={styles.metaItem}>{msg.log_start || msg.updatedAt || "--"}</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
 
           {/* Detail panel */}
           {selectedGuid && (

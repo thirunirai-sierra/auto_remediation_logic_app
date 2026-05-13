@@ -23,15 +23,18 @@ router = APIRouter()
 settings = get_settings()
 
 
+
 class ApplyFixRequest(BaseModel):
     trigger_type: str = "user"
     proposed_fix: Optional[str] = None
     force: bool = False
 
 
+
 class UpdateTicketRequest(BaseModel):
     status: str
     resolution_notes: Optional[str] = None
+
 
 
 class ApproveIncidentRequest(BaseModel):
@@ -68,6 +71,7 @@ async def get_monitor_messages(
         params.append(f"%{search}%")
         params.append(f"%{search}%")
 
+
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     count_sql = f"SELECT COUNT(*) FROM {client.full_table} {where}"
     cursor.execute(count_sql, params)
@@ -87,17 +91,20 @@ async def get_monitor_messages(
     messages = []
     for row in rows:
         d = dict(zip(cols, row))
-        messages.append({
-            "message_guid": d["INCIDENT_ID"],
-            "iflow_display": d["WORKFLOW_NAME"],
-            "title": d["WORKFLOW_NAME"],
-            "status": d["STATUS"],
-            "log_start": d["CREATED_AT"].isoformat() if d["CREATED_AT"] else None,
-            "updatedAt": d["UPDATED_AT"].isoformat() if d["UPDATED_AT"] else None,
-            "error_type": d["ERROR_CATEGORY"],
-        })
+        messages.append(
+            {
+                "message_guid": d["INCIDENT_ID"],
+                "iflow_display": d["WORKFLOW_NAME"],
+                "title": d["WORKFLOW_NAME"],
+                "status": d["STATUS"],
+                "log_start": d["CREATED_AT"].isoformat() if d["CREATED_AT"] else None,
+                "updatedAt": d["UPDATED_AT"].isoformat() if d["UPDATED_AT"] else None,
+                "error_type": d["ERROR_CATEGORY"],
+            }
+        )
     cursor.close()
-    return {"messages": messages, "total": total}
+    return {"messages": messages, "total": total, "summary": summary}
+
 
 
 @router.get("/monitor/message/{incident_id}")
@@ -126,6 +133,7 @@ async def get_monitor_message_detail(incident_id: str):
     rec = dict(zip(cols, row))
     cursor.close()
 
+
     error_details = {
         "error_message": rec.get("ERROR_MESSAGE"),
         "raw_error_text": rec.get("ERROR_MESSAGE"),
@@ -133,6 +141,7 @@ async def get_monitor_message_detail(incident_id: str):
         "log_start": rec["CREATED_AT"].isoformat() if rec.get("CREATED_AT") else None,
         "log_end": rec["UPDATED_AT"].isoformat() if rec.get("UPDATED_AT") else None,
     }
+
 
     ai_diag = rec.get("AI_DIAGNOSIS") or ""
     ai_proposed = rec.get("AI_PROPOSED_FIX") or ""
@@ -145,6 +154,7 @@ async def get_monitor_message_detail(incident_id: str):
 
     # Restore can_generate_fix field
     can_generate_fix = rec.get("AUTO_FIX_ATTEMPTED") is not None and not rec.get("AUTO_FIX_SUCCESS")
+
 
     return {
         "incident_id": incident_id,
@@ -170,6 +180,7 @@ async def get_monitor_message_detail(incident_id: str):
     }
 
 
+
 @router.post("/monitor/analyze/{incident_id}")
 async def analyze_message(incident_id: str):
     """
@@ -188,7 +199,7 @@ async def analyze_message(incident_id: str):
     row = cursor.fetchone()
     if not row:
         raise HTTPException(404, "Incident not found")
-    workflow_name, error_msg, error_code, sub_id = row
+    workflow_name, error_msg, error_code, _sub_id = row
     cursor.close()
 
     # Use LLM to generate diagnosis and proposed fix (offloaded to thread)
@@ -236,6 +247,7 @@ async def analyze_message(incident_id: str):
     client.conn.commit()
     cursor.close()
     return {"status": "analyzed", "diagnosis": diagnosis, "confidence": confidence}
+
 
 
 @router.post("/monitor/explain/{incident_id}")
@@ -332,6 +344,7 @@ Workflow definition snippet: {json.dumps(definition, default=str)[:2000]}
     return fix_patch
 
 
+
 @router.post("/monitor/apply-fix/{incident_id}")
 async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     """
@@ -352,7 +365,7 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     row = cursor.fetchone()
     if not row:
         raise HTTPException(404, "Incident not found")
-    workflow_name, sub_id, error_category, error_msg = row
+    workflow_name, sub_id, _error_category, _error_msg = row
     cursor.close()
 
     # Use orchestrator to remediate
@@ -413,9 +426,11 @@ async def get_tickets():
     return {"tickets": []}
 
 
+
 @router.post("/tickets/{ticket_id}/update")
-async def update_ticket(ticket_id: str, req: UpdateTicketRequest):
+async def update_ticket(_ticket_id: str, _req: UpdateTicketRequest):
     return {"status": "updated"}
+
 
 
 @router.get("/approvals/pending")
@@ -423,9 +438,11 @@ async def get_pending_approvals():
     return {"pending": []}
 
 
+
 @router.post("/approvals/{incident_id}/approve")
-async def approve_incident(incident_id: str, req: ApproveIncidentRequest):
+async def approve_incident(_incident_id: str, _req: ApproveIncidentRequest):
     return {"status": "processed"}
+
 
 
 @router.get("/aem/status")
@@ -433,9 +450,11 @@ async def aem_status():
     return {"event_mesh_enabled": True, "messages_retrieved": 0, "total_incidents": 0, "queue_depth": 0}
 
 
+
 @router.get("/aem/incidents")
 async def aem_incidents(limit: int = 100):
     return {"incidents": []}
+
 
 
 @router.get("/mcp/tools")

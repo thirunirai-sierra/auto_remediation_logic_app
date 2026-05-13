@@ -348,12 +348,19 @@
   flex-direction: column;
   gap: 0.35rem;
   padding: 0.75rem 1rem;
-  cursor: pointer;
+  cursor: default;
   border-bottom: 1px solid var(--orbit-gray-100, #f3f4f6);
   transition: background var(--orbit-transition), border-left-color var(--orbit-transition);
 }
 .messageRow:hover { background: var(--orbit-gray-50, #f9fafb); }
 .messageRowSelected { background: #f0f5ff !important; }
+
+.messageHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
 
 .messageMain { display: flex; align-items: center; gap: 0.5rem; }
 .messageName {
@@ -367,6 +374,24 @@
 
 .messageMeta { display: flex; gap: 0.875rem; }
 .metaItem { font-size: 0.72rem; color: var(--orbit-gray-600, #4b5563); }
+
+.messageOpenBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid var(--orbit-gray-200, #e5e7eb);
+  border-radius: 9999px;
+  background: #fff;
+  color: var(--orbit-gray-600, #4b5563);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.messageOpenBtn:hover {
+  background: var(--orbit-gray-50, #f9fafb);
+  color: var(--orbit-gray-900, #111827);
+}
 
 /* ── Detail panel ────────────────────────────────────────────────────── */
 .detailPanel {
