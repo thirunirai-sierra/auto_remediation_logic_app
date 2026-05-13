@@ -9,6 +9,7 @@
 
 # Python cache and bytecode
 __pycache__/
+.pycache/
 *.py[cod]
 *$py.class
 

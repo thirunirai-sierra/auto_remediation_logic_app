@@ -1,160 +1,89 @@
-"""Load settings from environment and optional .env file."""
-
+# server/config.py
+"""
+Application configuration loaded from environment variables.
+"""
 import os
-from dataclasses import dataclass
+from pathlib import Path
+from dotenv import load_dotenv
+from pydantic_settings import BaseSettings
 from typing import Optional
 
-from dotenv import load_dotenv
+# Try to load .env from current directory or parent directory
+env_path = Path(__file__).parent / ".env"
+if not env_path.exists():
+    env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
-load_dotenv()
+class Settings(BaseSettings):
+    # Azure AD (service principal)
+    AZURE_TENANT_ID: Optional[str] = None
+    AZURE_CLIENT_ID: Optional[str] = None
+    AZURE_CLIENT_SECRET: Optional[str] = None
 
+    # Azure subscription / Logic Apps
+    AZURE_SUBSCRIPTION_ID: Optional[str] = None
+    AZURE_RESOURCE_GROUP: Optional[str] = None
+    LOG_ANALYTICS_WORKSPACE_ID: Optional[str] = None
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    v = os.getenv(name)
-    if v is None:
-        return default
-    return v.strip().lower() in ("1", "true", "yes", "on")
+    # Azure API versions
+    AZURE_API_RUNS_VERSION: str = "2019-05-01"
+    AZURE_API_WORKFLOW_VERSION: str = "2019-05-01"
+    AZURE_API_TRIGGER_RUN_VERSION: str = "2016-06-01"
 
+    # Remediation settings
+    MAX_REMEDIATION_ATTEMPTS: int = 2
+    FALLBACK_HTTP_URL: str = "https://httpbin.org/status/200"
+    HTTP_TIMEOUT_ISO: str = "PT2M"
 
-def _env_int(name: str, default: int) -> int:
-    v = os.getenv(name)
-    if v is None:
-        return default
-    try:
-        return int(v)
-    except ValueError:
-        return default
-
-
-@dataclass
-class Settings:
-    # Azure credentials (for remediation)
-    tenant_id: Optional[str]
-    client_id: Optional[str]
-    client_secret: Optional[str]
-    fallback_http_url: str
-    auth_header_name: str
-    auth_header_value: str
-    http_timeout_iso: str
-    
-    # Azure OpenAI (optional)
-    azure_openai_endpoint: Optional[str]
-    azure_openai_api_key: Optional[str]
-    azure_openai_deployment: str
-    azure_openai_api_version: str
-    azure_api_runs_version: str
-    azure_api_workflow_version: str
-    azure_api_trigger_run_version: str
-    max_remediation_attempts: int
-    rag_enabled: bool
-    rag_top_k: int
-    rag_embedding_deployment: Optional[str]
-    rag_knowledge_path: Optional[str]
-    
-    # Multi-flow settings
-    subscription_id: Optional[str]
-    resource_group: Optional[str]
-    log_analytics_workspace_id: Optional[str]
-    multi_flow_enabled: bool
-    lookback_hours: int
-    top_n_runs: int
-    max_concurrency: int
-    schedule_minutes: int
-    log_only: bool
-    log_level: str
-    
-    # ========== ADD THESE MISSING FIELDS ==========
-    
-    # Database (PostgreSQL - legacy)
-    db_connection_string: str
-    
     # SAP AI Core
-    sap_auth_url: Optional[str]
-    sap_client_id: Optional[str]
-    sap_client_secret: Optional[str]
-    sap_base_url: Optional[str]
-    sap_resource_group: Optional[str]
-    sap_embedding_model: str
-    sap_chat_deployment_id: Optional[str]
-    
-    # HANA Database (Knowledge Base)
-    hana_host: str
-    hana_port: int
-    hana_user: str
-    hana_password: str
-    hana_schema: str
-    hana_table: str
-    hana_observability_table: str
-    # Embedding Model (SAP AI Core)
-    embedding_deployment_id: str
-    vector_dimension: int
+    AICORE_AUTH_URL: Optional[str] = None
+    AICORE_CLIENT_ID: Optional[str] = None
+    AICORE_CLIENT_SECRET: Optional[str] = None
+    AICORE_BASE_URL: Optional[str] = None
+    AICORE_RESOURCE_GROUP: Optional[str] = None
+    AICORE_CHAT_DEPLOYMENT_ID: Optional[str] = None
 
+    # HANA Database
+    HANA_HOST: str = ""
+    HANA_PORT: int = 443
+    HANA_USER: str = ""
+    HANA_PASSWORD: str = ""
+    HANA_SCHEMA: str = ""
+    HANA_TABLE: str = "LOGIC_APPS_KNOWLEDGE"
+    HANA_OBSERVABILITY_TABLE: str = "LOGIC_APPS_OBSERVABILITY"
+
+    # Embeddings (for HANA vector search)
+    EMBEDDING_DEPLOYMENT_ID: str = ""
+    VECTOR_DIMENSION: int = 3072
+
+    # Multi‑flow settings
+    LOOKBACK_HOURS: int = 24
+    MAX_CONCURRENCY: int = 6
+
+    VERIFY_FIX_WITH_TEST_RUN: bool = False
+    # Add these inside Settings class
+    FALLBACK_HTTP_URL: str = "https://httpbin.org/status/200"
+    HTTP_TIMEOUT_ISO: str = "PT2M"
+    DRY_RUN: bool = False
+    TRACKER_RETENTION_DAYS: int = 90
+    TRACKER_MAX_RETRY_COUNT: int = 2
+    
+        # Knowledge scraper settings
+    KNOWLEDGE_CHUNK_SIZE: int = 1200
+    KNOWLEDGE_CHUNK_OVERLAP: int = 50
+    KNOWLEDGE_SCRAPE_BATCH_SIZE: int = 3
+    KNOWLEDGE_SCRAPE_TIMEOUT: float = 45.0
+    KNOWLEDGE_SKIP_SLOW_URLS: bool = True
+    # Optional: comma‑separated list of URLs to scrape (if empty, use default)
+    KNOWLEDGE_MICROSOFT_LEARN_URLS: str = ""
+    class Config:
+        # Don't load from .env again (we already loaded manually)
+        env_file = None
+        extra = "ignore"
+
+
+settings = Settings()
 
 def get_settings() -> Settings:
-    return Settings(
-        # Azure credentials
-        tenant_id=os.getenv("AZURE_TENANT_ID"),
-        client_id=os.getenv("AZURE_CLIENT_ID"),
-        client_secret=os.getenv("AZURE_CLIENT_SECRET"),
-        fallback_http_url=os.getenv(
-            "REMEDIATION_FALLBACK_HTTP_URL", "https://httpbin.org/status/200"
-        ),
-        auth_header_name=os.getenv("REMEDIATION_AUTH_HEADER_NAME", "Authorization"),
-        auth_header_value=os.getenv("REMEDIATION_AUTH_HEADER_VALUE", ""),
-        http_timeout_iso=os.getenv("REMEDIATION_HTTP_TIMEOUT", "PT2M"),
-        
-        # Azure OpenAI
-        azure_openai_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-        azure_openai_api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-        azure_openai_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini"),
-        azure_openai_api_version=os.getenv(
-            "AZURE_OPENAI_API_VERSION", "2024-02-15-preview"
-        ),
-        azure_api_runs_version=os.getenv("AZURE_API_RUNS_VERSION", "2019-05-01"),
-        azure_api_workflow_version=os.getenv("AZURE_API_WORKFLOW_VERSION", "2019-05-01"),
-        azure_api_trigger_run_version=os.getenv("AZURE_API_TRIGGER_RUN_VERSION", "2016-06-01"),
-        max_remediation_attempts=max(1, int(os.getenv("MAX_REMEDIATION_ATTEMPTS", "2"))),
-        rag_enabled=_env_bool("RAG_ERROR_ANALYSIS", False),
-        rag_top_k=max(1, int(os.getenv("RAG_TOP_K", "5"))),
-        rag_embedding_deployment=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT"),
-        rag_knowledge_path=os.getenv("RAG_KNOWLEDGE_PATH"),
-        
-        # Multi-flow
-        subscription_id=os.getenv("AZURE_SUBSCRIPTION_ID"),
-        resource_group=os.getenv("AZURE_RESOURCE_GROUP"),
-        log_analytics_workspace_id=os.getenv("LOG_ANALYTICS_WORKSPACE_ID"),
-        multi_flow_enabled=_env_bool("MULTI_FLOW_ENABLED", False),
-        # Faster defaults for day-to-day RCA runs; still fully overridable via env/CLI.
-        lookback_hours=_env_int("LOOKBACK_HOURS", 24),
-        top_n_runs=_env_int("TOP_N_RUNS", 5),
-        max_concurrency=_env_int("MAX_CONCURRENCY", 6),
-        schedule_minutes=_env_int("SCHEDULE_MINUTES", 0),
-        log_only=_env_bool("LOG_ONLY", False),
-        log_level=os.getenv("LOG_LEVEL", "INFO"),
-        
-        # ========== ADD THESE VALUES ==========
-        
-        # PostgreSQL (legacy)
-        db_connection_string=os.getenv("DB_CONNECTION_STRING", ""),
-        
-        # SAP AI Core
-        sap_auth_url=os.getenv("AICORE_AUTH_URL"),
-        sap_client_id=os.getenv("AICORE_CLIENT_ID"),
-        sap_client_secret=os.getenv("AICORE_CLIENT_SECRET"),
-        sap_base_url=os.getenv("AICORE_BASE_URL"),
-        sap_resource_group=os.getenv("AICORE_RESOURCE_GROUP"),
-        sap_embedding_model=os.getenv("AICORE_EMBEDDING_MODEL", "text-embedding-ada-002"),
-        sap_chat_deployment_id=os.getenv("AICORE_CHAT_DEPLOYMENT_ID"),
-        
-        # HANA Database (Knowledge Base)
-        hana_host=os.getenv("HANA_HOST", ""),
-        hana_port=int(os.getenv("HANA_PORT", "443")),
-        hana_user=os.getenv("HANA_USER", ""),
-        hana_password=os.getenv("HANA_PASSWORD", ""),
-        hana_schema=os.getenv("HANA_SCHEMA", ""),
-        hana_table=os.getenv("HANA_TABLE", "LOGIC_APPS_KNOWLEDGE"),
-        hana_observability_table=os.getenv("HANA_OBSERVABILITY_TABLE", "LOGIC_APPS_OBSERVABILITY"),
-        # Embedding Model
-        embedding_deployment_id=os.getenv("EMBEDDING_DEPLOYMENT_ID", ""),
-        vector_dimension=int(os.getenv("VECTOR_DIMENSION", "3072")),
-    )
+    """Return singleton settings instance."""
+    return settings
