@@ -1,27 +1,24 @@
-# server/routers/observability.py
 """
 Observability endpoints for incident tracking and AI‑assisted analysis.
 Uses SAP AI Core LLM and HANA knowledge base for explanations and fix generation.
 """
-import json
-import logging
-import asyncio
+import json,asyncio,logging
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 
-from db.hana_client import get_global_client   #  Use singleton
+from db.hana_client import get_global_client   # Use singleton
 from config import get_settings
 from services.auth import get_arm_token
 from services.workflow_service import get_workflow
 from services.agents.knowledge.knowledge_base import KnowledgeAgent
+from services.agents.knowledge.embedder import get_embedder
 from utils.llm_client import AICoreLLMClient
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 settings = get_settings()
-
 
 
 class ApplyFixRequest(BaseModel):
@@ -30,11 +27,9 @@ class ApplyFixRequest(BaseModel):
     force: bool = False
 
 
-
 class UpdateTicketRequest(BaseModel):
     status: str
     resolution_notes: Optional[str] = None
-
 
 
 class ApproveIncidentRequest(BaseModel):
@@ -42,7 +37,6 @@ class ApproveIncidentRequest(BaseModel):
     comment: Optional[str] = None
 
 
-# Use singleton client
 def get_hana_client():
     """Return the singleton HANA client for observability."""
     return get_global_client()
@@ -71,7 +65,6 @@ async def get_monitor_messages(
         params.append(f"%{search}%")
         params.append(f"%{search}%")
 
-
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     count_sql = f"SELECT COUNT(*) FROM {client.full_table} {where}"
     cursor.execute(count_sql, params)
@@ -91,25 +84,22 @@ async def get_monitor_messages(
     messages = []
     for row in rows:
         d = dict(zip(cols, row))
-        messages.append(
-            {
-                "message_guid": d["INCIDENT_ID"],
-                "iflow_display": d["WORKFLOW_NAME"],
-                "title": d["WORKFLOW_NAME"],
-                "status": d["STATUS"],
-                "log_start": d["CREATED_AT"].isoformat() if d["CREATED_AT"] else None,
-                "updatedAt": d["UPDATED_AT"].isoformat() if d["UPDATED_AT"] else None,
-                "error_type": d["ERROR_CATEGORY"],
-            }
-        )
+        messages.append({
+            "message_guid": d["INCIDENT_ID"],
+            "iflow_display": d["WORKFLOW_NAME"],
+            "title": d["WORKFLOW_NAME"],
+            "status": d["STATUS"],
+            "log_start": d["CREATED_AT"].isoformat() if d["CREATED_AT"] else None,
+            "updatedAt": d["UPDATED_AT"].isoformat() if d["UPDATED_AT"] else None,
+            "error_type": d["ERROR_CATEGORY"],
+        })
     cursor.close()
-    return {"messages": messages, "total": total, "summary": summary}
-
+    return {"messages": messages, "total": total}
 
 
 @router.get("/monitor/message/{incident_id}")
 async def get_monitor_message_detail(incident_id: str):
-    """Get full details of a specific incident."""
+    """Get full details of a specific incident, including artifact, history, and related knowledge."""
     client = get_hana_client()
     if not client or not client._ensure_connected():
         raise HTTPException(503, "HANA not available")
@@ -133,7 +123,6 @@ async def get_monitor_message_detail(incident_id: str):
     rec = dict(zip(cols, row))
     cursor.close()
 
-
     error_details = {
         "error_message": rec.get("ERROR_MESSAGE"),
         "raw_error_text": rec.get("ERROR_MESSAGE"),
@@ -141,7 +130,6 @@ async def get_monitor_message_detail(incident_id: str):
         "log_start": rec["CREATED_AT"].isoformat() if rec.get("CREATED_AT") else None,
         "log_end": rec["UPDATED_AT"].isoformat() if rec.get("UPDATED_AT") else None,
     }
-
 
     ai_diag = rec.get("AI_DIAGNOSIS") or ""
     ai_proposed = rec.get("AI_PROPOSED_FIX") or ""
@@ -152,9 +140,26 @@ async def get_monitor_message_detail(incident_id: str):
     properties = json.loads(rec.get("PROPERTIES_JSON") or "{}")
     artifact = json.loads(rec.get("ARTIFACT_JSON") or "{}")
 
-    # Restore can_generate_fix field
     can_generate_fix = rec.get("AUTO_FIX_ATTEMPTED") is not None and not rec.get("AUTO_FIX_SUCCESS")
 
+    # --- Knowledge base search for related knowledge ---
+    related_knowledge = []
+    error_msg = rec.get("ERROR_MESSAGE") or ""
+    if error_msg:
+        try:
+            embedder = get_embedder()
+            query_vec = embedder.embed(error_msg)  
+            similar = client.search_similar(query_vec, top_k=5)
+            related_knowledge = [
+                {
+                    "title": chunk["meta"].get("title", "Knowledge entry"),
+                    "content": chunk["text"][:500],
+                    "similarity": round(chunk["similarity"], 1)
+                }
+                for chunk in similar
+            ]
+        except Exception as e:
+            logger.warning("Knowledge search failed: %s", e)
 
     return {
         "incident_id": incident_id,
@@ -169,16 +174,16 @@ async def get_monitor_message_detail(incident_id: str):
             "confidence_label": "High" if ai_conf >= 0.9 else "Medium" if ai_conf >= 0.7 else "Low",
             "fix_patch": fix_patch,
             "field_changes": field_changes,
-            "can_generate_fix": can_generate_fix,   
+            "can_generate_fix": can_generate_fix,
             "fix_summary": rec.get("FIX_STRATEGY"),
         },
         "properties": properties,
         "artifact": artifact,
-        "attachments": [],
+        "attachments": [],   # can be used for binary attachments
         "history": history,
         "incident_status": rec["STATUS"],
+        "related_knowledge": related_knowledge,   # <-- new field for knowledge results
     }
-
 
 
 @router.post("/monitor/analyze/{incident_id}")
@@ -202,14 +207,15 @@ async def analyze_message(incident_id: str):
     workflow_name, error_msg, error_code, _sub_id = row
     cursor.close()
 
-    # Use LLM to generate diagnosis and proposed fix (offloaded to thread)
     llm = AICoreLLMClient.from_env()
     system_prompt = (
         "You are an Azure Logic Apps expert. Analyze the error and provide diagnosis, proposed fix, and confidence (0-1). "
         "Return ONLY JSON with keys: diagnosis, proposed_fix, confidence."
     )
     user_prompt = f"Workflow: {workflow_name}\nError code: {error_code}\nError message: {error_msg}"
-    result = await asyncio.to_thread(llm.complete_json, system_prompt=system_prompt, user_prompt=user_prompt)
+    
+    # FIX: directly await the async method (no asyncio.to_thread)
+    result = await llm.complete_json(system_prompt=system_prompt, user_prompt=user_prompt)
 
     if not result:
         raise HTTPException(500, "LLM analysis failed")
@@ -218,15 +224,15 @@ async def analyze_message(incident_id: str):
     proposed_fix = result.get("proposed_fix", "")
     confidence = float(result.get("confidence", 0.7))
 
-    # Optional: enhance with HANA knowledge base (also offloaded)
+    # Optional: enhance with HANA knowledge base
     try:
         knowledge = KnowledgeAgent(settings)
-        similar = await asyncio.to_thread(knowledge.search, f"{error_code} {error_msg}", 2)
+        similar = knowledge.search(f"{error_code} {error_msg}", 2)   # this is sync, OK
         if similar:
             kb_text = "\n".join([chunk["text"] for chunk in similar])
             enhancement_prompt = f"Refine the diagnosis and fix using this knowledge:\n{kb_text}\n\nCurrent diagnosis: {diagnosis}\nCurrent fix: {proposed_fix}"
-            enhanced = await asyncio.to_thread(
-                llm.complete_json,
+            # FIX: directly await
+            enhanced = await llm.complete_json(
                 system_prompt="You are a technical writer. Improve the diagnosis and fix using the knowledge. Return JSON with keys: diagnosis, proposed_fix.",
                 user_prompt=enhancement_prompt,
             )
@@ -247,7 +253,6 @@ async def analyze_message(incident_id: str):
     client.conn.commit()
     cursor.close()
     return {"status": "analyzed", "diagnosis": diagnosis, "confidence": confidence}
-
 
 
 @router.post("/monitor/explain/{incident_id}")
@@ -275,7 +280,8 @@ async def explain_error(incident_id: str):
         "recommended_actions (list), error_category."
     )
     user_prompt = f"Workflow: {workflow}\nError code: {error_code}\nError message: {error_msg}"
-    response = await asyncio.to_thread(llm.complete_json, system_prompt=system_prompt, user_prompt=user_prompt)
+    # FIX: directly await
+    response = await llm.complete_json(system_prompt=system_prompt, user_prompt=user_prompt)
     if not response:
         raise HTTPException(500, "LLM explanation failed")
     return response
@@ -302,7 +308,7 @@ async def generate_fix_patch(incident_id: str):
     workflow_name, sub_id, error_msg, error_category = row
     cursor.close()
 
-    # Fetch current workflow definition (offloaded)
+    # Fetch current workflow definition
     token = get_arm_token(settings.AZURE_TENANT_ID, settings.AZURE_CLIENT_ID, settings.AZURE_CLIENT_SECRET)
     workflow = await asyncio.to_thread(
         get_workflow, token, sub_id, settings.AZURE_RESOURCE_GROUP, workflow_name
@@ -319,7 +325,8 @@ Error category: {error_category}
 Error message: {error_msg}
 Workflow definition snippet: {json.dumps(definition, default=str)[:2000]}
 """
-    fix_patch = await asyncio.to_thread(llm.complete_json, system_prompt=system_prompt, user_prompt=user_prompt)
+    # FIX: directly await (no asyncio.to_thread)
+    fix_patch = await llm.complete_json(system_prompt=system_prompt, user_prompt=user_prompt)
     if not fix_patch:
         fix_patch = {
             "summary": f"Fix for {error_category}",
@@ -342,7 +349,6 @@ Workflow definition snippet: {json.dumps(definition, default=str)[:2000]}
     client.conn.commit()
     cursor.close()
     return fix_patch
-
 
 
 @router.post("/monitor/apply-fix/{incident_id}")
@@ -420,11 +426,125 @@ async def get_fix_status(incident_id: str):
     }
 
 
+
+# New endpoints for frontend dashboard
+
+
+@router.get("/logs/overview")
+async def get_logs_overview(top: int = Query(1000, ge=1, le=5000)):
+    """Return aggregated metrics for logs dashboard (KPIs, distributions, timeline, recent errors)."""
+    client = get_hana_client()
+    if not client or not client._ensure_connected():
+        raise HTTPException(503, "HANA not available")
+
+    cursor = client.conn.cursor()
+    table = client.full_table
+
+    # KPIs
+    cursor.execute(f"SELECT COUNT(*) FROM {table}")
+    total_logs = cursor.fetchone()[0]
+    cursor.execute(f"SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM {table}")
+    total_flows = cursor.fetchone()[0] or 0
+    cursor.execute(f"SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM {table} WHERE STATUS IN ('FIX_FAILED','FAILED')")
+    error_flows = cursor.fetchone()[0] or 0
+    cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE STATUS IN ('AUTO_FIXED','FIX_VERIFIED')")
+    fixed_flows = cursor.fetchone()[0] or 0
+    cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE ERROR_MESSAGE IS NOT NULL")
+    total_error_messages = cursor.fetchone()[0]
+
+    # Status breakdown
+    cursor.execute(f"SELECT STATUS, COUNT(*) FROM {table} GROUP BY STATUS ORDER BY COUNT(*) DESC")
+    status_breakdown = [{"status": row[0], "count": row[1]} for row in cursor.fetchall()]
+
+    # Error distribution
+    cursor.execute(f"SELECT ERROR_CATEGORY, COUNT(*) FROM {table} WHERE ERROR_CATEGORY IS NOT NULL GROUP BY ERROR_CATEGORY ORDER BY COUNT(*) DESC")
+    error_distribution = [{"error_type": row[0] or "UNKNOWN", "count": row[1]} for row in cursor.fetchall()]
+
+    # Top iFlows (workflows with most failures)
+    cursor.execute(f"SELECT WORKFLOW_NAME, COUNT(*) FROM {table} GROUP BY WORKFLOW_NAME ORDER BY COUNT(*) DESC LIMIT 10")
+    top_iflows = [{"iflow_name": row[0], "failure_count": row[1]} for row in cursor.fetchall()]
+
+    # Timeline (group by day)
+    cursor.execute(f"""
+        SELECT CAST(CREATED_AT AS DATE) AS log_date, COUNT(*) as count
+        FROM {table}
+        WHERE CREATED_AT IS NOT NULL
+        GROUP BY CAST(CREATED_AT AS DATE)
+        ORDER BY CAST(CREATED_AT AS DATE) DESC
+        LIMIT 30
+        """)
+    timeline = [{"time": str(row[0]), "count": row[1]} for row in cursor.fetchall()]
+
+    # Recent error messages (limit top)
+    cursor.execute(f"""
+        SELECT WORKFLOW_NAME, ERROR_CODE, ERROR_MESSAGE, CREATED_AT, SUBSCRIPTION_ID, STATUS, INCIDENT_ID
+        FROM {table}
+        WHERE ERROR_MESSAGE IS NOT NULL
+        ORDER BY CREATED_AT DESC
+        LIMIT {top}
+    """)
+    error_messages = []
+    for row in cursor.fetchall():
+        error_messages.append({
+            "integrationScenario": row[0],
+            "errorType": row[1],
+            "errorMessage": row[2],
+            "time": row[3].isoformat() if row[3] else None,
+            "resourceId": None,
+            "status": row[5],
+            "runId": row[6],
+        })
+    cursor.close()
+
+    return {
+        "kpi": {
+            "total_flows": total_flows,
+            "error_flows": error_flows,
+            "fixed_flows": fixed_flows,
+            "total_logs": total_logs,
+            "total_error_messages": total_error_messages,
+        },
+        "status_breakdown": status_breakdown,
+        "error_distribution": error_distribution,
+        "top_iflows": top_iflows,
+        "timeline": timeline,
+        "error_messages": error_messages,
+    }
+
+
+@router.get("/incidents")
+async def get_incidents():
+    """Return a simplified list of incidents for the logs page."""
+    client = get_hana_client()
+    if not client or not client._ensure_connected():
+        raise HTTPException(503, "HANA not available")
+
+    cursor = client.conn.cursor()
+    cursor.execute(f"""
+        SELECT INCIDENT_ID, SUBSCRIPTION_ID, WORKFLOW_NAME, ERROR_CODE, ERROR_MESSAGE, CREATED_AT
+        FROM {client.full_table}
+        ORDER BY CREATED_AT DESC
+        LIMIT 500
+    """)
+    rows = cursor.fetchall()
+    incidents = []
+    for row in rows:
+        incidents.append({
+            "incidentId": row[0],
+            "subscriptionId": row[1],
+            "integrationScenario": row[2],
+            "errorType": row[3],
+            "errorMessage": row[4],
+            "time": row[5].isoformat() if row[5] else None,
+        })
+    cursor.close()
+    return incidents
+
+
 # Stubs for tickets and approvals (kept for compatibility)
 @router.get("/tickets")
 async def get_tickets():
     return {"tickets": []}
-
 
 
 @router.post("/tickets/{ticket_id}/update")
@@ -432,11 +552,9 @@ async def update_ticket(_ticket_id: str, _req: UpdateTicketRequest):
     return {"status": "updated"}
 
 
-
 @router.get("/approvals/pending")
 async def get_pending_approvals():
     return {"pending": []}
-
 
 
 @router.post("/approvals/{incident_id}/approve")
@@ -444,17 +562,14 @@ async def approve_incident(_incident_id: str, _req: ApproveIncidentRequest):
     return {"status": "processed"}
 
 
-
 @router.get("/aem/status")
 async def aem_status():
     return {"event_mesh_enabled": True, "messages_retrieved": 0, "total_incidents": 0, "queue_depth": 0}
 
 
-
 @router.get("/aem/incidents")
 async def aem_incidents(limit: int = 100):
     return {"incidents": []}
-
 
 
 @router.get("/mcp/tools")

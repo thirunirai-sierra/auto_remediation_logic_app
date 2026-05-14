@@ -1,19 +1,21 @@
-# server/main.py
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+from routers import dashboard
 from config import get_settings
 from routers import api_ingest, observability, knowledge, workflow
 from services.agents.orchestrator import Orchestrator
+from services.workflow_service import get_workflow
+from services.auth import get_arm_token
+from db.hana_client import get_global_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger(__name__)
@@ -41,6 +43,59 @@ async def continuous_monitor(settings):
             cycle_id = str(uuid.uuid4())[:8]
             logger.info("[MONITOR-%s] Processing failure: %s / %s", cycle_id, workflow_name, run_id)
             try:
+                # --- Fetch artifact metadata from Azure before remediation ---
+                artifact_meta = {}
+                try:
+                    token = get_arm_token(
+                        settings.AZURE_TENANT_ID,
+                        settings.AZURE_CLIENT_ID,
+                        settings.AZURE_CLIENT_SECRET
+                    )
+                    workflow = await asyncio.to_thread(
+                        get_workflow, token,
+                        settings.AZURE_SUBSCRIPTION_ID,
+                        settings.AZURE_RESOURCE_GROUP,
+                        workflow_name
+                    )
+                    props = workflow.get("properties", {})
+                    artifact_meta = {
+                        "name": workflow.get("name"),
+                        "artifact_id": workflow.get("id"),
+                        "version": props.get("version"),
+                        "package": props.get("package", "default"),
+                        "deployed_on": props.get("createdTime"),
+                        "deployed_by": "unknown",
+                        "runtime_node": workflow.get("location"),
+                        "status": props.get("provisioningState"),
+                    }
+                except Exception as e:
+                    logger.warning("Failed to fetch artifact meta for %s: %s", workflow_name, e)
+
+                # --- Initial history entry: detected ---
+                initial_history = [{
+                    "step": "Detected",
+                    "description": "CPI error detected and incident created.",
+                    "status": "completed",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }]
+
+                # Store initial record (or update if already exists)
+                client = get_global_client()
+                if client:
+                    try:
+                        client.upsert_observability_record({
+                            "incident_id": run_id,
+                            "workflow_name": workflow_name,
+                            "error_message": error_msg,
+                            "error_code": error_code,
+                            "status": "DETECTED",
+                            "artifact_json": json.dumps(artifact_meta),
+                            "history_entries": json.dumps(initial_history),
+                        })
+                    except Exception as e:
+                        logger.error("Failed to insert initial record for %s: %s", run_id, e)
+
+                # --- Run remediation ---
                 result = await orchestrator.remediate(
                     workflow_name=workflow_name,
                     run_id=run_id,
@@ -49,6 +104,26 @@ async def continuous_monitor(settings):
                 )
                 status = result.get("status", "unknown")
                 logger.info("[MONITOR-%s] Result for %s: %s", cycle_id, run_id, status)
+
+                # --- Update DB with final status and fix details ---
+                if client:
+                    final_status = "AUTO_FIXED" if status == "remediated" else status.upper()
+                    fix_strategy = result.get("fix_strategy")
+                    if isinstance(fix_strategy, dict):
+                        fix_strategy = fix_strategy.get("strategy_description", str(fix_strategy))
+                    try:
+                        client.upsert_observability_record({
+                            "incident_id": run_id,
+                            "status": final_status,
+                            "auto_fix_attempted": True,
+                            "auto_fix_success": (status == "remediated"),
+                            "fix_strategy": fix_strategy,
+                            "rca_root_cause": result.get("root_cause"),
+                            "suggested_fix": result.get("suggested_fix"),
+                        })
+                    except Exception as e:
+                        logger.error("Failed to update final status for %s: %s", run_id, e)
+
                 if status == "remediated":
                     logger.info("[MONITOR-%s] SUCCESS: Auto-remediation completed", cycle_id)
                 return result
@@ -128,6 +203,14 @@ app.include_router(api_ingest.router, prefix="/api/ingest", tags=["ingestion"])
 app.include_router(observability.router, prefix="/api", tags=["observability"])
 app.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"])
 app.include_router(workflow.router, prefix="/workflows", tags=["workflows"])
+app.include_router(dashboard.router)
+
+@app.get("/api/monitor/status")
+async def api_monitor_status():
+    """Return the status of the continuous monitor."""
+    global _monitor_task
+    is_running = _monitor_task is not None and not _monitor_task.done()
+    return {"is_running": is_running, "poll_interval_seconds": 60}
 
 @app.get("/")
 async def root():

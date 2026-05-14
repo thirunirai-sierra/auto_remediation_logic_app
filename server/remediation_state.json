@@ -10,7 +10,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "08584235596815960612696824507CU04": {
       "run_id": "08584235596815960612696824507CU04",
@@ -22,7 +24,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "08584236322056128862689593174CU18": {
       "run_id": "08584236322056128862689593174CU18",
@@ -34,7 +38,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "08584235508324806066851744584CU09": {
       "run_id": "08584235508324806066851744584CU09",
@@ -46,7 +52,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "Logic_Apps_test:08584235423489140498349845457CU21": {
       "run_id": "Logic_Apps_test:08584235423489140498349845457CU21",
@@ -58,7 +66,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "08584234711850912705537825569CU20": {
       "run_id": "08584234711850912705537825569CU20",
@@ -70,7 +80,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "08584234780094879687244578165CU01": {
       "run_id": "08584234780094879687244578165CU01",
@@ -82,7 +94,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "08584234780748705055380067605CU00": {
       "run_id": "08584234780748705055380067605CU00",
@@ -94,7 +108,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "08584234795257735661358079679CU02": {
       "run_id": "08584234795257735661358079679CU02",
@@ -106,7 +122,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "08584235385053875997677704523CU23": {
       "run_id": "08584235385053875997677704523CU23",
@@ -118,7 +136,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "08584235385333219480965349639CU20": {
       "run_id": "08584235385333219480965349639CU20",
@@ -130,7 +150,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "08584235386538985829249502586CU01": {
       "run_id": "08584235386538985829249502586CU01",
@@ -142,7 +164,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "08584234517730634331641020352CU07": {
       "run_id": "08584234517730634331641020352CU07",
@@ -154,7 +178,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "08584234550378882107396986370CU04": {
       "run_id": "08584234550378882107396986370CU04",
@@ -166,7 +192,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "ERROR-FLOW:08584234517730634331641020352CU07": {
       "run_id": "ERROR-FLOW:08584234517730634331641020352CU07",
@@ -178,7 +206,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "ERROR-FLOW:08584234550378882107396986370CU04": {
       "run_id": "ERROR-FLOW:08584234550378882107396986370CU04",
@@ -190,7 +220,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "ERROR-FLOW:08584236322056128862689593174CU18": {
       "run_id": "ERROR-FLOW:08584236322056128862689593174CU18",
@@ -202,7 +234,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "ERROR-FLOW:08584235596815960612696824507CU04": {
       "run_id": "ERROR-FLOW:08584235596815960612696824507CU04",
@@ -214,7 +248,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "ERROR-FLOW:08584236330957059896571203390CU04": {
       "run_id": "ERROR-FLOW:08584236330957059896571203390CU04",
@@ -226,7 +262,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "ERROR-FLOW:08584235550034911214716195529CU07": {
       "run_id": "ERROR-FLOW:08584235550034911214716195529CU07",
@@ -238,7 +276,9 @@
       "retry_count": 0,
       "last_attempt_at": null,
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
     },
     "08584229591530384809255076978CU04": {
       "run_id": "08584229591530384809255076978CU04",
@@ -250,19 +290,72 @@
       "retry_count": 0,
       "last_attempt_at": "2026-05-13T11:07:16.845389",
       "auto_fix_attempted": true,
-      "auto_fix_success": false
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": null
+    },
+    "08584228746094870482264604455CU10": {
+      "run_id": "08584228746094870482264604455CU10",
+      "workflow_name": "ERROR-FLOW",
+      "attempted_at": "2026-05-14T11:48:19.834286",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-14T11:48:19.834286",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": {
+        "strategy_description": "Guard div() denominator to prevent divide-by-zero in Compose expression",
+        "fix_type": "div_zero_guard",
+        "changes": {},
+        "explanation": "Division by zero detected; wrap denominator check and return safe fallback.",
+        "risk": "low",
+        "changes_applied": true
+      },
+      "root_cause": "The div() denominator resolved to null due to missing/unset source data."
+    },
+    "08584228540224368732271096743CU26": {
+      "run_id": "08584228540224368732271096743CU26",
+      "workflow_name": "ERROR-FLOW",
+      "attempted_at": "2026-05-14T16:54:02.786511",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-14T16:54:02.786511",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": {
+        "strategy_description": "Guard div() denominator to prevent divide-by-zero in Compose expression",
+        "fix_type": "div_zero_guard",
+        "changes": {},
+        "explanation": "Division by zero detected; wrap denominator check and return safe fallback.",
+        "risk": "low",
+        "changes_applied": true
+      },
+      "root_cause": "Second parameter to div() evaluated to null in the Compose action."
     }
   },
   "workflow_states": {
     "ERROR-FLOW": {
       "workflow_name": "ERROR-FLOW",
-      "last_fixed_at": "2026-05-13T11:07:16.845389",
-      "last_fixed_run_id": "08584229591530384809255076978CU04",
-      "error_type_fixed": "The second argument passed to the div() function in the Compose action evaluated to null due to missing or unset data (e.g., a property path that doesn't exist for some runs or an uninitialized variable).",
+      "last_fixed_at": "2026-05-14T16:54:02.786511",
+      "last_fixed_run_id": "08584228540224368732271096743CU26",
+      "error_type_fixed": "bad_request",
       "workflow_hash": "",
-      "fix_count": 10
+      "fix_count": 39,
+      "last_fix_strategy": {
+        "strategy_description": "Guard div() denominator to prevent divide-by-zero in Compose expression",
+        "fix_type": "div_zero_guard",
+        "changes": {},
+        "explanation": "Division by zero detected; wrap denominator check and return safe fallback.",
+        "risk": "low",
+        "changes_applied": true
+      },
+      "last_root_cause": "Second parameter to div() evaluated to null in the Compose action."
     }
   },
   "workflow_hashes": {},
-  "last_updated": "2026-05-13T11:07:16.845389"
+  "last_updated": "2026-05-14T16:54:02.786511"
 }
