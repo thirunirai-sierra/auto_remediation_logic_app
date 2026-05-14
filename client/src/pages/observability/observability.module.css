@@ -2256,3 +2256,30 @@
   0%   { background-position: 100% 0; }
   100% { background-position: -150% 0; }
 }
+.knowledgeList {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.knowledgeCard {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+.knowledgeTitle {
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin-bottom: 0.5rem;
+  color: #1f2937;
+}
+.knowledgeContent {
+  font-size: 0.85rem;
+  color: #4b5563;
+  margin-bottom: 0.5rem;
+  line-height: 1.4;
+}
+.knowledgeSimilarity {
+  font-size: 0.75rem;
+  color: #6b7280;
+}

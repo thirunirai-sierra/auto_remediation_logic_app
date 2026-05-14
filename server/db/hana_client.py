@@ -1,11 +1,23 @@
 # server/db/hana_client.py
 """
-Unified HANA database client for observability and knowledge base.
-Singleton pattern, batch operations, and dashboard analytics.
+Unified SAP HANA database client for observability and knowledge base operations.
+
+This module provides:
+- Connection management with automatic retry and reconnection
+- Observability incident storage and analytics
+- Knowledge base storage with vector embedding support
+- Batch insert/update operations
+- Dashboard aggregation queries
+- Singleton client management for application-wide reuse
+
+Classes:
+    HanaClient: Main database client for SAP HANA operations.
+
+Functions:
+    get_global_client: Returns a singleton HanaClient instance.
+    get_hana_client: Deprecated compatibility wrapper.
 """
-import json
-import logging
-import time
+import json,os,time,logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,7 +32,26 @@ _global_client = None
 
 class HanaClient:
     """
-    HANA client supporting both observability table and knowledge base table.
+    Unified SAP HANA client for observability and knowledge base operations.
+
+    Features:
+        - Automatic connection retry and validation
+        - Observability incident tracking
+        - AI-assisted diagnostics storage
+        - Knowledge base chunk storage
+        - Vector embedding management
+        - Similarity search using cosine similarity
+        - Dashboard analytics queries
+
+    Attributes:
+        host (str): HANA database host.
+        port (int): HANA database port.
+        user (str): Database username.
+        password (str): Database password.
+        schema (str): Active HANA schema.
+        table (str): Observability table name.
+        full_table (str): Fully-qualified observability table reference.
+        conn (Optional[dbapi.Connection]): Active database connection.
     """
 
     def __init__(
@@ -32,6 +63,20 @@ class HanaClient:
         schema: Optional[str] = None,
         table: Optional[str] = None,
     ):
+        """
+    Initialize the HANA client and establish a database connection.
+
+    Args:
+        host (Optional[str]): HANA server hostname or IP address.
+        port (Optional[int]): HANA server port.
+        user (Optional[str]): Database username.
+        password (Optional[str]): Database password.
+        schema (Optional[str]): Target HANA schema.
+        table (Optional[str]): Observability table name.
+
+    Raises:
+        RuntimeError: If database connection initialization fails.
+    """
         settings = get_settings()
         self.host = host or settings.HANA_HOST
         self.port = port or settings.HANA_PORT
@@ -45,7 +90,16 @@ class HanaClient:
 
     # ---------- Connection Management ----------
     def _connect(self) -> bool:
-        """Establish connection with retries and detailed logging."""
+        """
+        Establish a connection to the SAP HANA database.
+
+        Performs up to 3 retry attempts before failing.
+
+        Returns:
+            bool:
+                True if connection succeeds,
+                False otherwise.
+        """
         if not self.host:
             logger.error("Cannot connect: HANA_HOST missing")
             return False
@@ -74,7 +128,17 @@ class HanaClient:
         return False
 
     def _ensure_connected(self) -> bool:
-        """Check connection and reconnect if needed."""
+        """
+        Ensure that the database connection is active.
+
+        Validates the current connection using a lightweight query.
+        Reconnects automatically if the connection is invalid.
+
+        Returns:
+            bool:
+                True if the connection is active or successfully restored,
+                False otherwise.
+        """
         if self.conn is None:
             return self._connect()
         try:
@@ -88,7 +152,17 @@ class HanaClient:
 
     # ---------- Observability Table Methods ----------
     def create_observability_table(self) -> bool:
-        """Create observability table if not exists and migrate columns."""
+        """
+        Create the observability table if it does not already exist.
+
+        If the table exists, missing columns required for newer schema
+        versions are added automatically.
+
+        Returns:
+            bool:
+                True if the table exists or was successfully created,
+                False otherwise.
+        """
         if not self._ensure_connected():
             logger.error("Cannot create observability table: no connection")
             return False
@@ -161,7 +235,20 @@ class HanaClient:
         return True
 
     def upsert_observability_record(self, record: Dict[str, Any]) -> bool:
-        """Insert or update a single observability record."""
+        """
+        Insert or update a single observability incident record.
+
+        If the incident already exists, the existing record is updated.
+
+        Args:
+            record (Dict[str, Any]):
+                Incident data containing observability and AI analysis fields.
+
+        Returns:
+            bool:
+                True if the operation succeeds,
+                False otherwise.
+        """
         if not self._ensure_connected():
             return False
 
@@ -207,21 +294,29 @@ class HanaClient:
             self.conn.commit()
             return True
         except dbapi.IntegrityError:
-            # Update on conflict
             update_sql = f"""
                 UPDATE {self.full_table}
-                SET SUBSCRIPTION_ID = ?, WORKFLOW_NAME = ?, ERROR_CODE = ?, ERROR_MESSAGE = ?,
-                    ERROR_CATEGORY = ?, STATUS = ?, RCA_ROOT_CAUSE = ?, FIX_STRATEGY = ?,
-                    UPDATED_AT = ?, AUTO_FIX_ATTEMPTED = ?, AUTO_FIX_SUCCESS = ?, RETRY_COUNT = ?,
-                    AI_DIAGNOSIS = COALESCE(AI_DIAGNOSIS, ?),
-                    AI_PROPOSED_FIX = COALESCE(AI_PROPOSED_FIX, ?),
-                    AI_CONFIDENCE = COALESCE(AI_CONFIDENCE, ?),
-                    AI_FIX_PATCH = COALESCE(AI_FIX_PATCH, ?),
-                    FIELD_CHANGES = COALESCE(FIELD_CHANGES, ?),
-                    HISTORY_ENTRIES = COALESCE(HISTORY_ENTRIES, ?),
-                    PROPERTIES_JSON = COALESCE(PROPERTIES_JSON, ?),
-                    ARTIFACT_JSON = COALESCE(ARTIFACT_JSON, ?),
-                    ERROR_DETAILS_JSON = COALESCE(ERROR_DETAILS_JSON, ?)
+                SET SUBSCRIPTION_ID = ?,
+                    WORKFLOW_NAME = ?,
+                    ERROR_CODE = ?,
+                    ERROR_MESSAGE = ?,
+                    ERROR_CATEGORY = ?,
+                    STATUS = ?,
+                    RCA_ROOT_CAUSE = ?,
+                    FIX_STRATEGY = ?,
+                    UPDATED_AT = ?,
+                    AUTO_FIX_ATTEMPTED = ?,
+                    AUTO_FIX_SUCCESS = ?,
+                    RETRY_COUNT = ?,
+                    AI_DIAGNOSIS = COALESCE(?, AI_DIAGNOSIS),
+                    AI_PROPOSED_FIX = COALESCE(?, AI_PROPOSED_FIX),
+                    AI_CONFIDENCE = COALESCE(?, AI_CONFIDENCE),
+                    AI_FIX_PATCH = COALESCE(?, AI_FIX_PATCH),
+                    FIELD_CHANGES = COALESCE(?, FIELD_CHANGES),
+                    HISTORY_ENTRIES = COALESCE(?, HISTORY_ENTRIES),
+                    PROPERTIES_JSON = COALESCE(?, PROPERTIES_JSON),
+                    ARTIFACT_JSON = COALESCE(?, ARTIFACT_JSON),
+                    ERROR_DETAILS_JSON = COALESCE(?, ERROR_DETAILS_JSON)
                 WHERE INCIDENT_ID = ?
             """
             cursor.execute(update_sql, (
@@ -230,9 +325,9 @@ class HanaClient:
                 record.get("error_code", "unknown"),
                 (record.get("error_message") or "")[:2000],
                 record.get("error_category", "UNKNOWN_ERROR"),
-                record.get("status", "Ticket Created"),
+                record.get("status", "Ticket Created"),          
                 (record.get("rca_root_cause") or "")[:4000],
-                (record.get("fix_strategy") or "")[:256],
+                (record.get("fix_strategy") or "")[:256],       
                 now,
                 record.get("auto_fix_attempted", False),
                 record.get("auto_fix_success", False),
@@ -261,7 +356,18 @@ class HanaClient:
     def batch_upsert_observability(self, records: List[Dict[str, Any]]) -> Tuple[int, int]:
         """
         Insert or update multiple observability records in a single transaction.
-        Returns (inserted_count, failed_count).
+
+        Existing records are updated automatically when primary key conflicts occur.
+
+        Args:
+            records (List[Dict[str, Any]]):
+                List of observability incident records.
+
+        Returns:
+            Tuple[int, int]:
+                A tuple containing:
+                    - inserted_or_updated_count (int)
+                    - failed_count (int)
         """
         if not records or not self._ensure_connected():
             return 0, len(records)
@@ -370,17 +476,27 @@ class HanaClient:
         subscription_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Gather dashboard metrics for the observability table.
+        Retrieve dashboard analytics for observability incidents.
+
+        Metrics include:
+            - Total incidents
+            - Auto-fix attempt counts
+            - Auto-fix success rate
+            - Error category distribution
+            - Status distribution
+            - Top failing workflows
 
         Args:
-            start_date: Start of time range.
-            end_date: End of time range.
-            subscription_id: Optional filter by subscription.
+            start_date (datetime):
+                Start of the reporting window.
+            end_date (datetime):
+                End of the reporting window.
+            subscription_id (Optional[str]):
+                Optional subscription filter.
 
         Returns:
-            Dict with total_incidents, auto_fix_attempted, auto_fix_succeeded,
-            auto_fix_rate_percent, error_distribution, status_distribution,
-            top_failing_workflows.
+            Dict[str, Any]:
+                Dictionary containing dashboard statistics and metadata.
         """
         if not self._ensure_connected():
             return {"error": "HANA connection failed"}
@@ -445,7 +561,20 @@ class HanaClient:
 
     # ---------- Knowledge Base Table Methods ----------
     def create_knowledge_table(self, drop_first: bool = False) -> None:
-        """Create knowledge base table with vector column."""
+        """
+        Create the vector-enabled knowledge base table.
+
+        Optionally drops the existing table in development environments.
+
+        Args:
+            drop_first (bool):
+                If True, drops the table before creation.
+                Ignored outside development environments.
+
+        Raises:
+            RuntimeError:
+                If the database connection is unavailable.
+        """
         if not self._ensure_connected():
             raise RuntimeError("Cannot create table: no HANA connection")
 
@@ -477,7 +606,13 @@ class HanaClient:
         logger.info("Created knowledge table %s", knowledge_table)
 
     def get_existing_urls(self) -> set:
-        """Return set of URLs already stored in knowledge base."""
+        """
+        Retrieve all URLs already stored in the knowledge base.
+
+        Returns:
+            set:
+                Set of unique URLs extracted from metadata.
+        """
         if not self._ensure_connected():
             return set()
         settings = get_settings()
@@ -499,7 +634,19 @@ class HanaClient:
         return urls
 
     def insert_knowledge_chunks(self, chunks: List[Dict[str, Any]]) -> int:
-        """Insert text chunks with metadata into knowledge table."""
+        """
+        Insert knowledge base text chunks into the database.
+
+        Args:
+            chunks (List[Dict[str, Any]]):
+                List of chunk dictionaries containing:
+                    - text
+                    - meta
+
+        Returns:
+            int:
+                Number of successfully inserted chunks.
+        """
         if not chunks or not self._ensure_connected():
             return 0
         settings = get_settings()
@@ -520,7 +667,18 @@ class HanaClient:
         return inserted
 
     def get_unvectorized_chunks(self, limit: int = 20) -> List[tuple]:
-        """Return (id, text, meta) for chunks without embeddings."""
+        """
+        Retrieve chunks that do not yet contain vector embeddings.
+
+        Args:
+            limit (int):
+                Maximum number of rows to return.
+
+        Returns:
+            List[tuple]:
+                List of tuples containing:
+                    (id, text, metadata)
+        """
         if not self._ensure_connected():
             return []
         settings = get_settings()
@@ -538,7 +696,15 @@ class HanaClient:
         return rows
 
     def update_embeddings(self, updates: List[Tuple[int, List[float]]]) -> None:
-        """Update vector embeddings for given chunk IDs using parameterized queries."""
+        """
+        Update vector embeddings for knowledge base chunks.
+
+        Args:
+            updates (List[Tuple[int, List[float]]]):
+                List containing:
+                    - chunk ID
+                    - embedding vector
+        """
         if not updates or not self._ensure_connected():
             return
         settings = get_settings()
@@ -559,7 +725,21 @@ class HanaClient:
         cur.close()
 
     def search_similar(self, query_vector: List[float], top_k: int = 5) -> List[Dict]:
-        """Search for similar chunks using cosine similarity."""
+        """
+        Search for semantically similar knowledge chunks.
+
+        Uses cosine similarity against stored vector embeddings.
+
+        Args:
+            query_vector (List[float]):
+                Query embedding vector.
+            top_k (int):
+                Maximum number of results to return.
+
+        Returns:
+            List[Dict]:
+                Ranked similarity search results with metadata.
+        """
         if not self._ensure_connected():
             return []
         settings = get_settings()
@@ -590,7 +770,16 @@ class HanaClient:
         return results
 
     def get_knowledge_stats(self) -> Dict[str, int]:
-        """Return total, vectorized, pending counts for knowledge table."""
+        """
+        Retrieve knowledge base storage statistics.
+
+        Returns:
+            Dict[str, int]:
+                Dictionary containing:
+                    - total
+                    - vectorized
+                    - pending
+        """
         if not self._ensure_connected():
             return {"total": 0, "vectorized": 0, "pending": 0}
         settings = get_settings()
@@ -604,20 +793,49 @@ class HanaClient:
         return {"total": total, "vectorized": vectorized, "pending": total - vectorized}
 
     def close(self) -> None:
+        """
+        Close the active database connection.
+
+        Safe to call multiple times.
+        """
         if self.conn:
             self.conn.close()
 
     def __enter__(self):
+        """
+        Enter context manager scope.
+
+        Returns:
+            HanaClient:
+                Active HANA client instance.
+        """
         self._ensure_connected()
         return self
 
     def __exit__(self, *args):
+        """
+        Exit context manager scope and close the database connection.
+
+        Args:
+            *args:
+                Context manager exception arguments.
+        """
         self.close()
 
 
 # ---------- Singleton Support ----------
 def get_global_client() -> Optional[HanaClient]:
-    """Return a singleton HANA client instance (reused across the application)."""
+    """
+    Retrieve the singleton HANA client instance.
+
+    Reuses an existing active connection when available.
+    Automatically initializes the observability table.
+
+    Returns:
+        Optional[HanaClient]:
+            Shared HANA client instance if successful,
+            otherwise None.
+    """
     global _global_client
     if _global_client is not None:
         if _global_client._ensure_connected():
@@ -641,6 +859,17 @@ def get_global_client() -> Optional[HanaClient]:
 
 # Compatibility wrapper for old code
 def get_hana_client(settings=None):
-    """Deprecated – kept for backward compatibility."""
+    """
+    Deprecated compatibility wrapper for legacy integrations.
+
+    Args:
+        settings:
+            Unused legacy parameter retained for backward compatibility.
+
+    Returns:
+        Optional[HanaClient]:
+            Shared singleton HANA client instance.
+    """
+    
     logger.warning("get_hana_client() is deprecated – use get_global_client() instead")
     return get_global_client()

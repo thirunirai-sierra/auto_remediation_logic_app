@@ -141,37 +141,43 @@ def ingest_records(results: list, tracker) -> int:
 # Watermark table helpers
 def init_watermark_table():
     """Ensure watermark table exists with an initial record."""
-    if not hana_client or not hana_client.conn:
+    if not hana_client or not hana_client._ensure_connected():
         logger.warning("Cannot init watermark table: HANA client not available")
         return
+
+    cursor = hana_client.conn.cursor()
     try:
-        cursor = hana_client.conn.cursor()
+        # Check if table exists
         cursor.execute("""
             SELECT COUNT(*) FROM SYS.TABLES
             WHERE SCHEMA_NAME = CURRENT_SCHEMA
             AND TABLE_NAME = 'INGEST_WATERMARK'
         """)
-        if cursor.fetchone()[0] == 0:
+        exists = cursor.fetchone()[0] > 0
+        if not exists:
             cursor.execute("""
                 CREATE COLUMN TABLE INGEST_WATERMARK (
                     PIPELINE_NAME NVARCHAR(64) PRIMARY KEY,
                     LAST_SUCCESSFUL_END_UTC TIMESTAMP
                 )
             """)
+            hana_client.conn.commit()
+            logger.info("Watermark table created")
+        # Now insert initial row if missing
+        cursor.execute("SELECT COUNT(*) FROM INGEST_WATERMARK WHERE PIPELINE_NAME = 'LogicAppsMonitor'")
+        if cursor.fetchone()[0] == 0:
             cursor.execute("""
-                INSERT INTO INGEST_WATERMARK
+                INSERT INTO INGEST_WATERMARK (PIPELINE_NAME, LAST_SUCCESSFUL_END_UTC)
                 VALUES ('LogicAppsMonitor', '2026-05-01 00:00:00')
             """)
             hana_client.conn.commit()
-            logger.info("Watermark table created")
-        else:
-            cursor.execute("SELECT COUNT(*) FROM INGEST_WATERMARK WHERE PIPELINE_NAME = 'LogicAppsMonitor'")
-            if cursor.fetchone()[0] == 0:
-                cursor.execute("INSERT INTO INGEST_WATERMARK VALUES ('LogicAppsMonitor', '2026-05-01 00:00:00')")
-                hana_client.conn.commit()
-        cursor.close()
+            logger.info("Initial watermark row inserted")
     except Exception as e:
-        logger.warning("Watermark table init failed: %s", e)
+        logger.error("Watermark table init failed: %s", e)
+        if hana_client.conn:
+            hana_client.conn.rollback()
+    finally:
+        cursor.close()
 
 
 if hana_client and hana_client.conn:

@@ -2,7 +2,9 @@
 Orchestrator agent: coordinates the entire remediation process.
 """
 import asyncio
+import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from services.agents.observer import Observer
@@ -57,6 +59,43 @@ class Orchestrator:
         else:
             self.fixer = None
 
+    # --------------------------------------------------------------------------
+    # NEW: History append helper
+    # --------------------------------------------------------------------------
+    def _append_history_entry(self, incident_id: str, step: str, description: str, status: str):
+        """
+        Append a timeline entry to the incident's history in HANA.
+
+        Args:
+            incident_id (str): The run ID (incident ID).
+            step (str): Short title of the event (e.g., "RCA Analysis").
+            description (str): Detailed description.
+            status (str): One of "completed", "failed", "pending", "in_progress", "info".
+        """
+        from db.hana_client import get_global_client
+        client = get_global_client()
+        if not client or not client._ensure_connected():
+            logger.warning("Cannot append history: HANA client not available")
+            return
+        cur = client.conn.cursor()
+        try:
+            cur.execute(f"SELECT HISTORY_ENTRIES FROM {client.full_table} WHERE INCIDENT_ID = ?", (incident_id,))
+            row = cur.fetchone()
+            entries = json.loads(row[0]) if row and row[0] else []
+            entries.append({
+                "step": step,
+                "description": description,
+                "status": status,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+            cur.execute(f"UPDATE {client.full_table} SET HISTORY_ENTRIES = ? WHERE INCIDENT_ID = ?", (json.dumps(entries), incident_id))
+            client.conn.commit()
+            logger.info("History entry added for %s: %s", incident_id, step)
+        except Exception as e:
+            logger.warning("Failed to append history for %s: %s", incident_id, e)
+        finally:
+            cur.close()
+
     async def _verify_fix(self, workflow_name: str, subscription_id: str, resource_group: str) -> Dict[str, Any]:
         """
         Trigger a workflow manually or via recurrence to verify that remediation succeeded.
@@ -96,37 +135,37 @@ class Orchestrator:
             return {"verified": False, "reason": str(e)}
 
     def _fallback_rca(self, error_context: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Perform a rule-based fallback RCA in case LLM-based RCA is unavailable.
-
-        Args:
-            error_context (Dict[str, Any]): Structured error information from failed action.
-
-        Returns:
-            Dict[str, Any]: RCA result with keys:
-                - 'root_cause' (str)
-                - 'exact_issue' (str)
-                - 'suggested_fix' (str)
-                - 'confidence' (float)
-                - 'solution' (str)
-        """
         from utils.error_detector import infer_root_cause, extract_exact_issue, confidence_score
-        from services.agents.rca.engine import _generate_suggested_fix_from_root_cause
-        
         error_msg = error_context.get("error_message", "")
         error_code = error_context.get("error_code", "")
-        error_type = "unknown"
         root_cause = infer_root_cause(error_code, error_msg)
         exact_issue = extract_exact_issue(error_msg, root_cause, error_context)
         confidence = confidence_score(root_cause, error_code, error_msg)
-        suggested_fix = _generate_suggested_fix_from_root_cause(root_cause, error_type, error_context)
-        
+
+        # Generate suggested_fix based on root cause
+        if root_cause == "not_found":
+            suggested_fix = "Update the endpoint URL to a valid address."
+        elif root_cause == "auth_or_authorization_error":
+            suggested_fix = "Refresh authentication or check permissions."
+        elif root_cause == "timeout":
+            suggested_fix = "Increase timeout and add a retry policy."
+        elif root_cause in ("payload_or_schema_error", "null_reference_error"):
+            suggested_fix = "Add null/type checks and defaults to the expression."
+        elif root_cause == "throttling":
+            suggested_fix = "Implement exponential backoff retry."
+        elif root_cause == "dns_resolution_error":
+            suggested_fix = "Fix the hostname or DNS configuration."
+        elif root_cause == "connection_refused":
+            suggested_fix = "Check firewall and port accessibility."
+        else:
+            suggested_fix = "Review the action inputs and outputs manually."
+
         return {
             "root_cause": root_cause,
             "exact_issue": exact_issue,
-            "suggested_fix": suggested_fix,
             "confidence": confidence,
-            "solution": f"Manual investigation required (LLM unavailable). Suggested fix: {suggested_fix}",
+            "solution": f"Rule-based analysis: {exact_issue}",
+            "suggested_fix": suggested_fix,
         }
 
     def _classify_error_rule_based(
@@ -265,6 +304,14 @@ class Orchestrator:
             logger.warning("RCA module not available – using fallback")
             rca_result = self._fallback_rca(error_ctx)
 
+        # --- NEW: Append history entry after RCA ---
+        self._append_history_entry(
+            run_id,
+            "RCA Analysis",
+            f"Root cause identified: {rca_result.get('root_cause', 'unknown')}",
+            "completed"
+        )
+
         # Step 5: Fixer - Apply remediation
         if not FIXER_AVAILABLE or not self.fixer:
             logger.error("Fixer module unavailable")
@@ -310,7 +357,15 @@ class Orchestrator:
                 fix_strategy=fix_result.get("fix_strategy"),  # NEW: Pass the fix strategy
                 root_cause=rca_result.get("root_cause")       # NEW: Pass the root cause
             )
-            logger.info("✅ Fix deployed successfully for %s/%s", workflow_name, run_id)
+            logger.info("Fix deployed successfully for %s/%s", workflow_name, run_id)
+
+            # --- NEW: Append history entry after successful fix ---
+            self._append_history_entry(
+                run_id,
+                "Auto-Fix Applied",
+                f"Fix strategy: {fix_result.get('fix_strategy', {}).get('strategy_description', 'unknown')}",
+                "completed"
+            )
             
             # Optional verification
             verification = {"verified": False, "reason": "disabled"}

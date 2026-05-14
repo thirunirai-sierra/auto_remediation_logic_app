@@ -70,3 +70,21 @@ class Embedder:
         with ThreadPoolExecutor(max_workers=3) as executor:
             results = list(executor.map(self.embed, texts))
         return results
+    _embedder_instance = None
+
+
+def get_embedder(settings: Optional[Settings] = None) -> Embedder:
+    """
+    Get a singleton Embedder instance.
+
+    Args:
+        settings (Optional[Settings]): Configuration object. If None, uses default settings.
+            The first call determines the settings; later calls ignore the argument.
+
+    Returns:
+        Embedder: The singleton Embedder instance.
+    """
+    global _embedder_instance
+    if _embedder_instance is None:
+        _embedder_instance = Embedder(settings)
+    return _embedder_instance
