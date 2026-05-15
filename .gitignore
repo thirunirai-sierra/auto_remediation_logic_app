@@ -80,3 +80,5 @@ logs/
 !requirement1.txt
 !agent/knowledge/*.jsonl
 remediation_state.json
+
+manifest.yaml
