@@ -16,6 +16,7 @@ from services.agents.orchestrator import Orchestrator
 from services.workflow_service import get_workflow
 from services.auth import get_arm_token
 from db.hana_client import get_global_client
+from routers import agents
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger(__name__)
@@ -204,6 +205,7 @@ app.include_router(observability.router, prefix="/api", tags=["observability"])
 app.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"])
 app.include_router(workflow.router, prefix="/workflows", tags=["workflows"])
 app.include_router(dashboard.router)
+app.include_router(agents.router)
 
 @app.get("/api/monitor/status")
 async def api_monitor_status():
