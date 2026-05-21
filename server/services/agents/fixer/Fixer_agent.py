@@ -21,6 +21,33 @@ from services.workflow_service import get_workflow, put_workflow
 
 logger = logging.getLogger(__name__)
 
+# Action types that support retryPolicy on Azure Logic Apps
+_RETRY_ELIGIBLE_TYPES = frozenset({
+    "http", "httpwebhook", "apiconnection", "apiconnectionwebhook",
+    "apiconnectionnotification", "function", "serviceprovider", "workflow",
+})
+
+
+def _collect_all_action_nodes(definition: Dict[str, Any]) -> list:
+    """Return a flat list of (name, node) for every action in the workflow definition."""
+    results: list = []
+
+    def walk(actions_obj: Any) -> None:
+        if not isinstance(actions_obj, dict):
+            return
+        for name, node in actions_obj.items():
+            if not isinstance(node, dict):
+                continue
+            results.append((name, node))
+            if isinstance(node.get("actions"), dict):
+                walk(node["actions"])
+            else_block = node.get("else")
+            if isinstance(else_block, dict) and isinstance(else_block.get("actions"), dict):
+                walk(else_block["actions"])
+
+    walk(definition.get("actions") or {})
+    return results
+
 
 class FixerAgent:
     """
@@ -429,7 +456,16 @@ class FixerAgent:
                     logger.warning("[FIXER] div_zero_guard strategy produced no node changes")
                     return None
             else:
+                action_type = (action_node.get("type") or "").lower()
                 for field, value in changes.items():
+                    if field.startswith("_"):
+                        continue  # skip internal metadata — Azure rejects unknown properties
+                    if field == "retryPolicy" and action_type not in _RETRY_ELIGIBLE_TYPES:
+                        logger.warning(
+                            "[FIXER] Skipping retryPolicy on action '%s' (type=%s) — not supported by ARM",
+                            failed_action_name, action_type,
+                        )
+                        continue
                     if field == "expression":
                         action_node["expression"] = value
                     elif field == "inputs" and isinstance(action_node.get("inputs"), dict):
@@ -443,6 +479,70 @@ class FixerAgent:
         except Exception as e:
             logger.error(f"[FIXER] Failed to apply fix: {e}")
             return None
+
+    def _apply_fallback_patch(
+        self,
+        fixed_workflow: Dict[str, Any],
+        definition: Dict[str, Any],
+        fix_strategy: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Last-resort patch when the specific failed action cannot be located.
+        For retry/throttle/timeout fixes: adds retryPolicy to every HTTP action.
+        For auth fixes: no structural change — returns workflow for re-deploy attempt.
+        """
+        fix_type = fix_strategy.get("fix_type", "")
+        changes = fix_strategy.get("changes", {})
+        retry_policy = changes.get("retryPolicy")
+
+        if retry_policy and fix_type in ("retry_fixed", "retry_exponential", "fallback_retry", ""):
+            all_actions = _collect_all_action_nodes(definition)
+            patched = 0
+            for name, node in all_actions:
+                node_type = (node.get("type") or "").lower()
+                if node_type in ("http", "httpwebhook", "apiconnection"):
+                    node["retryPolicy"] = retry_policy
+                    patched += 1
+            if patched:
+                logger.info("[FIXER] Fallback: applied retryPolicy to %d HTTP action(s)", patched)
+                return fixed_workflow
+            top_actions = definition.get("actions") or {}
+            patched_top = 0
+            for node in top_actions.values():
+                if isinstance(node, dict):
+                    node_type = (node.get("type") or "").lower()
+                    if node_type in _RETRY_ELIGIBLE_TYPES:
+                        node["retryPolicy"] = retry_policy
+                        patched_top += 1
+            logger.info("[FIXER] Fallback: applied retryPolicy to %d eligible top-level actions", patched_top)
+            return fixed_workflow
+
+        if fix_type in ("auth_connection_check",) or not any(
+            not k.startswith("_") for k in changes
+        ):
+            logger.info("[FIXER] Fallback: re-deploying workflow without structural changes (auth/metadata fix)")
+            return fixed_workflow
+
+        all_actions = _collect_all_action_nodes(definition)
+        patched = 0
+        for name, node in all_actions:
+            node_type = (node.get("type") or "").lower()
+            for field, value in changes.items():
+                if field.startswith("_"):
+                    continue
+                if field == "retryPolicy" and node_type not in _RETRY_ELIGIBLE_TYPES:
+                    continue
+                if field == "inputs" and isinstance(node.get("inputs"), dict):
+                    node["inputs"].update(value)
+                else:
+                    node[field] = value
+            patched += 1
+        if patched:
+            logger.info("[FIXER] Fallback: applied changes to %d action(s)", patched)
+            return fixed_workflow
+
+        logger.error("[FIXER] Fallback exhausted — no applicable patch found")
+        return None
     
     def _deploy_workflow_fix(
         self,

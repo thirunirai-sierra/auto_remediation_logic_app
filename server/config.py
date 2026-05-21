@@ -8,11 +8,6 @@ from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
 from typing import Optional
 
-# Try to load .env from current directory or parent directory
-env_path = Path(__file__).parent / ".env"
-if not env_path.exists():
-    env_path = Path(__file__).parent.parent / ".env"
-load_dotenv(dotenv_path=env_path)
 
 class Settings(BaseSettings):
     # Azure AD (service principal)
