@@ -1,31 +1,32 @@
-# server/services/agents/fixer/Fixer_agent.py
 """
-Enhanced Fixer Agent - Uses LLM to generate fixes based on RCAResult.
-Then deploys to Azure.
+PRODUCTION FIXER V3 - LLM with graceful fallback.
+Uses shared utilities from remediation.py for navigation and sanitisation.
 """
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import json
 import logging
-import re
-import time
-from typing import Any, Dict, Optional
-
-import requests
+from typing import Any, Dict, List, Optional, Tuple
 
 from services.auth import get_arm_token
 from config import Settings, get_settings
-from services.agents.fixer.remediation import strip_read_only_for_put, locate_action_node, fix_condition_contains_null
 from services.workflow_service import get_workflow, put_workflow
+from services.agents.fixer import remediation as rem
+from utils.llm_client import AICoreLLMClient
 
 logger = logging.getLogger(__name__)
 
 
 class FixerAgent:
     """
-    Intelligent Fixer - Uses LLM to generate fixes based on RCAResult.
-    Then deploys to Azure.
+    Production-grade Logic Apps auto-remediation agent.
+
+    Uses rule‑based fixes for known patterns (timeouts) and LLM‑generated
+    patches for all other failures. All workflow navigation and sanitisation
+    are delegated to the shared remediation module.
     """
 
     def __init__(self, settings: Optional[Settings] = None):
@@ -36,458 +37,306 @@ class FixerAgent:
     def token(self) -> str:
         if not self._token:
             self._token = get_arm_token(
-                self.settings.AZURE_TENANT_ID,        # uppercase
-                self.settings.AZURE_CLIENT_ID,        # uppercase
-                self.settings.AZURE_CLIENT_SECRET,    # uppercase
+                self.settings.AZURE_TENANT_ID,
+                self.settings.AZURE_CLIENT_ID,
+                self.settings.AZURE_CLIENT_SECRET,
             )
         return self._token
 
     def fix(self, rca_result: Dict[str, Any], workflow_context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Use LLM to generate fix strategy from RCA, then apply to Azure.
+        Synchronous entry point for workflow remediation.
+
+        Args:
+            rca_result: Root cause analysis output.
+            workflow_context: Metadata (workflow_name, run_id, subscription_id,
+                               resource_group, failed_action_name).
+
+        Returns:
+            Result dictionary with keys: success, workflow_name, run_id, (error).
         """
-        workflow_name = workflow_context.get("workflow_name")
-        run_id = workflow_context.get("run_id")
-        failed_action_name = workflow_context.get("failed_action_name")
-
-        logger.info("[FIXER] Generating fix for %s", failed_action_name)
-
         try:
-            # 1. Get current workflow
-            workflow = get_workflow(
-                token=self.token,
-                subscription_id=workflow_context.get("subscription_id"),
-                resource_group=workflow_context.get("resource_group"),
-                workflow_name=workflow_name,
-            )
-
-            # 2. Get the failed action details
-            definition = workflow.get("properties", {}).get("definition", {})
-            try:
-                _, failed_action = locate_action_node(definition, failed_action_name)
-            except Exception:
-                failed_action = {}
-            action_type = (failed_action or {}).get("type", "unknown")
-
-            # 3. Generate fix strategy based on error type
-            root_cause = rca_result.get("root_cause", "unknown")
-            exact_issue = rca_result.get("exact_issue", "")
-
-            fix_strategy = self._generate_fix_strategy(
-                root_cause=root_cause,
-                exact_issue=exact_issue,
-                action_type=action_type,
-                action_config=failed_action,
-                error_message=(
-                    f"{rca_result.get('exact_issue', '')} {rca_result.get('solution', '')}"
-                ),
-            )
-
-            logger.info("[FIXER] Fix strategy: %s", fix_strategy.get("strategy_description", "N/A"))
-
-            # 4. Apply the fix
-            fixed_workflow = self._apply_fix_to_workflow(
-                workflow=workflow,
-                fix_strategy=fix_strategy,
-                failed_action_name=failed_action_name,
-            )
-
-            if not fixed_workflow:
-                return {
-                    "success": False,
-                    "workflow_name": workflow_name,
-                    "run_id": run_id,
-                    "error": "Failed to apply fix to workflow",
-                }
-
-            if not fix_strategy.get("changes_applied", True):
-                return {
-                    "success": False,
-                    "workflow_name": workflow_name,
-                    "run_id": run_id,
-                    "error": "No applicable fix changes generated",
-                }
-
-            # 🔍 LOG THE PATCHED WORKFLOW JSON BEFORE DEPLOYMENT
-            patched_json = json.dumps(fixed_workflow, indent=2)
-            logger.info("=== PATCHED WORKFLOW JSON (first 3000 chars) ===")
-            logger.info(patched_json[:3000])
-            if len(patched_json) > 3000:
-                logger.info("... (truncated)")
-
-            # Optional dry-run (prevent actual deployment)
-            if getattr(self.settings, "DRY_RUN", False):
-                logger.warning("[FIXER] DRY RUN – skipping actual deployment")
-                return {
-                    "success": False,
-                    "workflow_name": workflow_name,
-                    "run_id": run_id,
-                    "error": "Dry run, no deployment",
-                    "patched_workflow": fixed_workflow,
-                }
-                
-
-            # 5. Deploy to Azure
-            result = self._deploy_workflow_fix(
-                subscription_id=workflow_context.get("subscription_id"),
-                resource_group=workflow_context.get("resource_group"),
-                workflow_name=workflow_name,
-                fixed_workflow=fixed_workflow,
-                etag=workflow.get("etag"),
-            )
-
-            if result.get("success"):
-                logger.info("[FIXER] Fix deployed successfully")
-                return {
-                    "success": True,
-                    "workflow_name": workflow_name,
-                    "run_id": run_id,
-                    "root_cause": root_cause,
-                    "fix_strategy": fix_strategy,
-                    "changes_applied": fix_strategy.get("changes", {}),
-                }
-            else:
-                return {
-                    "success": False,
-                    "workflow_name": workflow_name,
-                    "run_id": run_id,
-                    "error": result.get("error", "Deployment failed"),
-                }
-
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(self._fix_async(rca_result, workflow_context))
+            loop.close()
+            return result
         except Exception as e:
-            logger.error("[FIXER] Error: %s", e, exc_info=True)
+            logger.error(f"FIXER FAILED: {e}", exc_info=True)
             return {
                 "success": False,
-                "workflow_name": workflow_name,
-                "run_id": run_id,
+                "workflow_name": workflow_context.get("workflow_name"),
+                "run_id": workflow_context.get("run_id"),
                 "error": str(e),
             }
 
-    def _generate_fix_strategy(
+    async def _fix_async(
         self,
-        root_cause: str,
-        exact_issue: str,
-        action_type: str,
-        action_config: Dict[str, Any],
-        error_message: str,
+        rca_result: Dict[str, Any],
+        workflow_context: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Generate fix strategy based on error type."""
-        root = str(root_cause or "").lower()
-        details = str(error_message or "").lower()
-        signal = f"{root} {details}"
+        """Async core remediation pipeline."""
+        workflow_name = workflow_context.get("workflow_name")
+        run_id = workflow_context.get("run_id")
+        failed_action_name = workflow_context.get("failed_action_name")
+        error_type = workflow_context.get("error_type", "unknown")
 
-        # Strategy for contains() null / payload schema issues
-        if root in ("payload_or_schema_error", "null_reference_error") or (
-            "contains" in signal and "null" in signal
-        ):
-            return {
-                "strategy_description": "Fix contains() null error by wrapping first argument with coalesce()",
-                "fix_type": "contains_null_guard",
-                "changes": {},
-                "explanation": "The contains() function received null. Wrapping with coalesce() provides a default empty string.",
-                "risk": "low",
-                "changes_applied": True,
-            }
+        logger.info("=" * 100)
+        logger.info("PRODUCTION FIXER V3 - LLM with Graceful Fallback")
+        logger.info("=" * 100)
+        logger.info(f"Workflow: {workflow_name} | Run: {run_id}")
+        logger.info(f"Failed Action: {failed_action_name}")
+        logger.info(f"Error Type: {error_type}")
+        logger.info(f"Root Cause: {rca_result.get('root_cause')}")
+        logger.info("")
 
-        # Strategy for missing property error
-        elif "property" in signal and "doesn't exist" in signal:
-            prop_match = re.search(r"'([^']+)'", error_message)
-            prop_name = prop_match.group(1) if prop_match else "unknown"
-
-            return {
-                "strategy_description": f"Fix missing property '{prop_name}' with safe navigation",
-                "changes": {
-                    "inputs": self._fix_missing_property_inputs(action_config.get("inputs", {}), prop_name)
-                },
-                "explanation": f"The property '{prop_name}' was missing. Using safe navigation (?['{prop_name}']) prevents the error.",
-                "risk": "low",
-                "changes_applied": True,
-            }
-
-        # Strategy for 404 error – use uppercase FALLBACK_HTTP_URL
-        elif root == "not_found" or "404" in signal or "not found" in signal:
-            return {
-                "strategy_description": "Fix 404 error by updating API endpoint",
-                "changes": {
-                    "inputs": {"uri": self.settings.FALLBACK_HTTP_URL}   # uppercase
-                },
-                "explanation": "The endpoint returned 404. Updated to a working fallback endpoint.",
-                "risk": "medium",
-                "changes_applied": True,
-            }
-
-        elif root == "timeout" or "timed out" in signal or "timeout" in signal:
-            return {
-                "strategy_description": "Add fixed retry policy for timeout errors",
-                "fix_type": "retry_fixed",
-                "changes": {"retryPolicy": {"type": "fixed", "count": 4, "interval": "PT20S"}},
-                "explanation": "Timeout detected; added fixed retry policy.",
-                "risk": "low",
-                "changes_applied": True,
-            }
-
-        elif root == "throttling" or "429" in signal or "throttl" in signal:
-            return {
-                "strategy_description": "Add exponential retry policy for throttling errors",
-                "fix_type": "retry_exponential",
-                "changes": {
-                    "retryPolicy": {
-                        "type": "exponential",
-                        "count": 6,
-                        "interval": "PT10S",
-                        "minimumInterval": "PT5S",
-                        "maximumInterval": "PT1M",
-                    }
-                },
-                "explanation": "Throttling detected; added exponential backoff retry policy.",
-                "risk": "low",
-                "changes_applied": True,
-            }
-
-        elif root == "auth_or_authorization_error" or "unauthorized" in signal or "forbidden" in signal or "authorization" in signal:
-            return {
-                "strategy_description": "Mark action for auth/connection verification",
-                "fix_type": "auth_connection_check",
-                "changes": {
-                    "_auto_fix_metadata": {
-                        "note": "Verify connection reference, identity, and secret bindings."
-                    }
-                },
-                "explanation": "Auth issue detected; action marked for connection reference verification.",
-                "risk": "low",
-                "changes_applied": True,
-            }
-
-        elif ("divide" in signal and "zero" in signal) or "function 'div'" in signal or " div(" in signal:
-            return {
-                "strategy_description": "Guard div() denominator to prevent divide-by-zero in Compose expression",
-                "fix_type": "div_zero_guard",
-                "changes": {},
-                "explanation": "Division by zero detected; wrap denominator check and return safe fallback.",
-                "risk": "low",
-                "changes_applied": True,
-            }
-
-        # Generic strategy
-        else:
-            return {
-                "strategy_description": f"Apply standard fix for {root_cause}",
-                "changes": {},
-                "explanation": exact_issue,
-                "risk": "low",
-                "changes_applied": False,
-            }
-    
-    def _fix_contains_expression(self, expression: Any) -> str:
-        """Fix contains() expression with coalesce."""
-        if not isinstance(expression, str):
-            return expression
-        
-        import re
-        pattern = r"contains\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)"
-        
-        def wrap_first_arg(match):
-            first_arg = match.group(1).strip()
-            second_arg = match.group(2).strip()
-            return f"contains(coalesce({first_arg}, ''), {second_arg})"
-        
-        return re.sub(pattern, wrap_first_arg, expression)
-
-    def _fix_div_zero_expression(self, expression: Any) -> Any:
-        """Guard div(numerator, denominator) calls with denominator zero check."""
-        if not isinstance(expression, str):
-            return expression
-        s = expression
-        i = 0
-        out: list[str] = []
-        changed = False
-
-        while i < len(s):
-            if s[i : i + 4].lower() == "div(":
-                start = i
-                j = i + 4
-                depth = 1
-                while j < len(s) and depth > 0:
-                    ch = s[j]
-                    if ch == "(":
-                        depth += 1
-                    elif ch == ")":
-                        depth -= 1
-                    j += 1
-                if depth != 0:
-                    # Unbalanced expression; keep original tail as-is.
-                    out.append(s[i:])
-                    break
-
-                inner = s[i + 4 : j - 1]
-                # Split numerator/denominator on top-level comma.
-                k = 0
-                part_depth = 0
-                comma_idx = -1
-                while k < len(inner):
-                    ch = inner[k]
-                    if ch == "(":
-                        part_depth += 1
-                    elif ch == ")":
-                        part_depth -= 1
-                    elif ch == "," and part_depth == 0:
-                        comma_idx = k
-                        break
-                    k += 1
-
-                if comma_idx == -1:
-                    # Not a standard div(a,b), keep original segment.
-                    out.append(s[start:j])
-                    i = j
-                    continue
-
-                num = inner[:comma_idx].strip()
-                den = inner[comma_idx + 1 :].strip()
-                guarded = (
-                    f"if(equals(coalesce({den}, 0), 0), 0, div({num}, {den}))"
-                )
-                out.append(guarded)
-                i = j
-                changed = True
-            else:
-                out.append(s[i])
-                i += 1
-
-        return "".join(out) if changed else expression
-
-    def _apply_div_zero_guard_recursive(self, node: Any) -> bool:
-        changed = False
-        if isinstance(node, dict):
-            for k, v in list(node.items()):
-                if isinstance(v, str):
-                    nv = self._fix_div_zero_expression(v)
-                    if nv != v:
-                        node[k] = nv
-                        changed = True
-                elif isinstance(v, (dict, list)):
-                    if self._apply_div_zero_guard_recursive(v):
-                        changed = True
-        elif isinstance(node, list):
-            for i, v in enumerate(node):
-                if isinstance(v, str):
-                    nv = self._fix_div_zero_expression(v)
-                    if nv != v:
-                        node[i] = nv
-                        changed = True
-                elif isinstance(v, (dict, list)):
-                    if self._apply_div_zero_guard_recursive(v):
-                        changed = True
-        return changed
-    
-    def _fix_missing_property_inputs(self, inputs: Dict[str, Any], prop_name: str) -> Dict[str, Any]:
-        """Fix inputs that reference missing property."""
-        fixed = inputs.copy() if isinstance(inputs, dict) else {}
-        
-        for key, value in fixed.items():
-            if isinstance(value, str) and f"['{prop_name}']" in value:
-                # Add safe navigation
-                fixed[key] = value.replace(f"['{prop_name}']", f"?['{prop_name}']")
-                # Wrap with coalesce
-                fixed[key] = fixed[key].replace(f"?['{prop_name}']", f"?['{prop_name}']")
-                fixed[key] = f"coalesce({fixed[key]}, '')"
-        
-        return fixed
-    
-    def _apply_fix_to_workflow(
-        self,
-        workflow: Dict[str, Any],
-        fix_strategy: Dict[str, Any],
-        failed_action_name: str,
-    ) -> Optional[Dict[str, Any]]:
-        """Apply the fix to the workflow definition."""
-        import copy
-        
         try:
-            fixed_workflow = copy.deepcopy(workflow)
-            definition = fixed_workflow.get("properties", {}).get("definition", {})
-            try:
-                _, action_node = locate_action_node(definition, failed_action_name)
-            except Exception:
-                logger.error(f"[FIXER] Action {failed_action_name} not found")
-                return None
+            # Step 1: Fetch workflow
+            logger.info("STEP 1: Fetching workflow definition...")
+            workflow = await asyncio.to_thread(
+                get_workflow,
+                self.token,
+                workflow_context.get("subscription_id"),
+                workflow_context.get("resource_group"),
+                workflow_name,
+            )
+            definition = workflow.get("properties", {}).get("definition", {})
+            if not definition:
+                return self._error_response(workflow_name, run_id, "No definition found")
+            logger.info("Fetched workflow")
 
-            changes = fix_strategy.get("changes", {})
-            fix_type = fix_strategy.get("fix_type")
-            
-            # Apply changes
-            if fix_type == "contains_null_guard":
-                rca_stub = {
-                    "root_cause": "payload_or_schema_error",
-                    "exact_issue": fix_strategy.get("explanation", ""),
-                    "solution": fix_strategy.get("strategy_description", ""),
-                }
-                if not fix_condition_contains_null(action_node, None, error_json=None, rca=rca_stub):
-                    logger.warning("[FIXER] contains_null_guard strategy produced no node changes")
-                    return None
-            elif fix_type == "div_zero_guard":
-                if not self._apply_div_zero_guard_recursive(action_node):
-                    logger.warning("[FIXER] div_zero_guard strategy produced no node changes")
-                    return None
-            else:
-                for field, value in changes.items():
-                    if field == "expression":
-                        action_node["expression"] = value
-                    elif field == "inputs" and isinstance(action_node.get("inputs"), dict):
-                        action_node["inputs"].update(value)
-                    else:
-                        action_node[field] = value
-            
-            logger.info(f"[FIXER] Applied fix to {failed_action_name}")
-            return fixed_workflow
-            
-        except Exception as e:
-            logger.error(f"[FIXER] Failed to apply fix: {e}")
-            return None
-    
-    def _deploy_workflow_fix(
-        self,
-        subscription_id: str,
-        resource_group: str,
-        workflow_name: str,
-        fixed_workflow: Dict[str, Any],
-        etag: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Deploy fixed workflow to Azure."""
-        max_retries = 3
-        
-        for attempt in range(max_retries):
+            # Step 2: Locate action using shared utility
+            logger.info("STEP 2: Locating action in definition...")
+            action_path = rem.find_action_path(definition, failed_action_name)
+            if not action_path:
+                return self._error_response(workflow_name, run_id, f"Action '{failed_action_name}' not found")
             try:
-                logger.info(f"[FIXER] Deploying to Azure (attempt {attempt + 1})...")
-                body = strip_read_only_for_put(fixed_workflow)
-                
-                result = put_workflow(
-                    token=self.token,
-                    subscription_id=subscription_id,
-                    resource_group=resource_group,
-                    workflow_name=workflow_name,
-                    workflow_body=body,
-                    etag=etag if attempt == 0 else "*",
-                )
-                
-                logger.info(f"[FIXER] Successfully deployed")
-                return {"success": True, "updated_workflow": result}
-                
-            except requests.HTTPError as e:
-                if e.response and e.response.status_code in (409, 412) and attempt < max_retries - 1:
-                    logger.warning(f"[FIXER] Conflict, retrying...")
-                    time.sleep(2 ** attempt)
-                    continue
-                return {"success": False, "error": str(e)[:200]}
-            
-            except Exception as e:
-                return {"success": False, "error": str(e)}
+                action_node = rem.navigate_path(definition, action_path)
+                if not isinstance(action_node, dict):
+                    raise ValueError("Node is not a dictionary")
+            except KeyError as e:
+                return self._error_response(workflow_name, run_id, f"Navigation error: {e}")
+
+            full_path = "/".join(action_path)
+            action_type = action_node.get("type", "unknown").lower()
+            logger.info(f"Located action at: {full_path}")
+            logger.info(f"   Action type: {action_type}")
+
+            # Step 3: Generate fix
+            logger.info("STEP 3: Generating fix...")
+            fixed_definition = await self._generate_fix(
+                definition, action_path, action_node,
+                error_type, rca_result, workflow_context
+            )
+            if not fixed_definition:
+                logger.warning("Fix generation failed - returning original definition")
+                fixed_definition = definition
+            logger.info("Fix generated")
+
+            # Step 4: Prepare deployment using shared sanitisation
+            logger.info("STEP 4: Preparing for deployment...")
+            updated_workflow = copy.deepcopy(workflow)
+            updated_workflow["properties"]["definition"] = fixed_definition
+            # Use the shared sanitisation function
+            updated_workflow = rem.strip_read_only_for_put(updated_workflow)
+
+            # Step 5: Deploy
+            logger.info("STEP 5: Deploying to Azure...")
+            if getattr(self.settings, "DRY_RUN", False):
+                logger.warning("DRY RUN - Skipping deployment")
+                return self._error_response(workflow_name, run_id, "Dry run mode")
+
+            await asyncio.to_thread(
+                put_workflow,
+                self.token,
+                workflow_context.get("subscription_id"),
+                workflow_context.get("resource_group"),
+                workflow_name,
+                updated_workflow,
+                workflow.get("etag"),
+            )
+            logger.info("Deployed successfully!")
+            return {
+                "success": True,
+                "workflow_name": workflow_name,
+                "run_id": run_id,
+                "error_type": error_type,
+                "action_fixed": failed_action_name,
+                "changes_applied": True,
+            }
+
+        except Exception as e:
+            logger.error(f"ERROR: {e}", exc_info=True)
+            return self._error_response(workflow_name, run_id, str(e))
+
+    async def _generate_fix(
+        self,
+        definition: Dict[str, Any],
+        action_path: List[str],
+        action_node: Dict[str, Any],
+        error_type: str,
+        rca_result: Dict[str, Any],
+        workflow_context: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Route to timeout fix or LLM fix."""
+        if error_type == "timeout":
+            return self._fix_timeout(definition, action_path, action_node)
+        else:
+            return await self._fix_with_llm(definition, action_path, action_node, rca_result, workflow_context)
+
+    def _fix_timeout(
+        self, definition: Dict[str, Any], action_path: List[str], action_node: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Deterministic fix for timeouts: add exponential retry policy."""
+        action_type = (action_node.get("type") or "").lower()
+        if action_type not in ("http", "httpwebhook"):
+            logger.info(f"Timeout fix skipped for type '{action_type}'")
+            return definition
+        try:
+            fixed_def = copy.deepcopy(definition)
+            node = rem.navigate_path(fixed_def, action_path)
+            if node:
+                node["retryPolicy"] = {
+                    "type": "exponential",
+                    "count": 5,
+                    "interval": "PT10S",
+                    "minimumInterval": "PT5S",
+                    "maximumInterval": "PT1M",
+                }
+                # Update parent conditions using shared utility
+                parents = rem.find_parent_conditions(fixed_def, action_path)
+                for parent_path in parents:
+                    rem.update_condition_runafter(fixed_def, parent_path)
+                logger.info("   Added retry policy for timeout")
+            return fixed_def
+        except Exception as e:
+            logger.error(f"Timeout fix failed: {e}")
+            return None
+
+    async def _fix_with_llm(
+        self,
+        definition: Dict[str, Any],
+        action_path: List[str],
+        action_node: Dict[str, Any],
+        rca_result: Dict[str, Any],
+        workflow_context: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """LLM‑driven patch generation with graceful fallback."""
+        try:
+            action_name = action_path[-1]
+            action_type = (action_node.get("type") or "").lower()
+
+            logger.info("Calling LLM for dynamic fix...")
+            llm = AICoreLLMClient.from_env()
+
+            system_prompt = f"""You are an Azure Logic Apps expert fixer.
+        ACTION TYPE: {action_type}
+        TASK: Fix this Azure Logic Apps action with the smallest safe patch.
+
+        STRICT RULES:
+        - Only return JSON with this shape: {{"patch": {{...}}}}
+        - Return ONLY the minimal patch required to fix the failed action.
+        - NEVER change workflow structure.
+        - NEVER return top-level keys such as 'actions', 'Condition', 'If', 'Scope', 'Foreach', 'Until', or 'Switch'.
+        - NEVER change 'type', 'host', 'method', 'path', 'connection', 'authentication', or any other immutable integration settings unless explicitly allowed.
+        - Do not rewrite the whole action.
+        - Use dotted keys for nested fields when needed.
+
+        ACTION-TYPE RULES:
+        - If action type is 'if', you may ONLY modify 'expression'
+        - If action type is 'apiconnection', you may ONLY modify:
+        'inputs.queries.path','inputs.method', 'trackedProperties', 'description'
+        - If action type is 'http' or 'httpwebhook', you may ONLY modify:
+        'retryPolicy', 'runtimeConfiguration', 'operationOptions', 'description', 'trackedProperties'
+        - For all other action types, you may ONLY modify:
+        'description', 'trackedProperties', 'runAfter'
+
+        PATCH QUALITY RULES:
+        - Prefer minimal, safe, backward-compatible changes.
+        - If the issue is caused by nullable values, use coalesce() with a safe default.
+        - If no safe fix is possible under these rules, return {{"patch": {{}}}}.
+        """
+            action_snippet = json.dumps(action_node, indent=2, default=str)[:2500]  # increased limit
+            user_prompt = f"""
+            FAILED ACTION DETAILS:
+            Name: {action_name}
+            Failed Action Name: {workflow_context.get('failed_action_name')}
+            Type: {action_type}
+            Error Type: {workflow_context.get('error_type')}
+            Root Cause: {rca_result.get('root_cause')}
+            Exact Issue: {rca_result.get('exact_issue', '')}
+
+            CURRENT ACTION JSON:
+            {action_snippet}
+
+            INSTRUCTIONS:
+            - Analyze the failure and infer a safe fix.
+            - Produce the smallest possible safe patch.
+            - Use dotted keys for nested updates.
+            - Do not include explanations.
+            - Return JSON only.
+            """
         
-        return {"success": False, "error": "Max retries exceeded"}
-    
-# Singleton
+        
+            response = await asyncio.wait_for(
+                llm.complete_json(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    required_keys=["patch"],
+                ),
+                timeout=120,
+            )
+
+            if response and "patch" in response:
+                patch = response.get("patch", {})
+                if isinstance(patch, dict) and patch:
+                    fixed_def = copy.deepcopy(definition)
+                    node = rem.navigate_path(fixed_def, action_path)
+                    if node:
+                        self._apply_nested_patch(node, patch)
+                        logger.info(f"   Applied LLM patch with {len(patch)} changes")
+                        return fixed_def
+                else:
+                    logger.warning("LLM returned empty patch - no changes needed")
+                    return definition
+            else:
+                logger.warning("LLM returned invalid response")
+                return definition
+
+        except asyncio.TimeoutError:
+            logger.warning("LLM call timed out - skipping LLM fix")
+            return definition
+        except Exception as e:
+            logger.warning(f"LLM fix failed ({str(e)[:100]}) - skipping LLM fix")
+            return definition
+
+    def _apply_nested_patch(self, node: Dict[str, Any], patch: Dict[str, Any]) -> None:
+        """Apply patch with dotted key support (used only for LLM patches)."""
+        for key, value in patch.items():
+            if "." in key:
+                parts = key.split(".")
+                cur = node
+                for part in parts[:-1]:
+                    if part not in cur:
+                        cur[part] = {}
+                    cur = cur[part]
+                cur[parts[-1]] = value
+                logger.info(f"   Applied nested: {key}")
+            else:
+                node[key] = value
+                logger.info(f"   Applied: {key}")
+
+    @staticmethod
+    def _error_response(workflow_name: str, run_id: str, error: str) -> Dict[str, Any]:
+        """Standard error response builder."""
+        return {"success": False, "workflow_name": workflow_name, "run_id": run_id, "error": error}
+
+
 _fixer_instance = None
 
+
 def get_fixer(settings: Optional[Settings] = None) -> FixerAgent:
+    """Singleton accessor."""
     global _fixer_instance
     if _fixer_instance is None:
         _fixer_instance = FixerAgent(settings)

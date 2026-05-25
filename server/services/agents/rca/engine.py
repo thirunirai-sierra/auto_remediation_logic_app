@@ -1,20 +1,6 @@
-# server/services/agents/rca/engine.py
 """
 Root Cause Analysis (RCA) engine powered by LLM and knowledge base enhancement.
-
-This module provides asynchronous RCA generation for workflow failures by:
-- Analyzing error context using an LLM
-- Falling back to rule-based detection when AI fails
-- Enhancing remediation guidance using semantic knowledge search
-- Returning structured RCA metadata for observability pipelines
-
-Features:
-    - Async LLM execution with timeout protection
-    - Rule-based fallback analysis
-    - Knowledge base semantic enhancement
-    - Structured JSON RCA responses
-    - Confidence scoring
-    - Workflow observability enrichment
+With comprehensive logging of diagnosis and suggested fix.
 """
 import asyncio
 import logging
@@ -34,66 +20,34 @@ async def generate_rca(
     settings: Settings,
 ) -> Dict[str, Any]:
     """
-    Generate root cause analysis (RCA) for a failed workflow action.
-
-    The RCA process includes:
-        1. LLM-based diagnostic analysis
-        2. Rule-based fallback analysis if LLM fails
-        3. Knowledge base enhancement using semantic search
-        4. Structured remediation recommendations
-
-    Args:
-        failed_action (Dict[str, Any]):
-            Metadata describing the failed workflow action.
-
-        error_context (Dict[str, Any]):
-            Detailed execution context including:
-                - error_message
-                - error_code
-                - action_type
-                - failed_action_name
-                - action_inputs
-                - workflow_name
-                - status
-                - level
-
-        error_type (str):
-            Normalized error classification category.
-
-        settings (Settings):
-            Application configuration instance.
-
-    Returns:
-        Dict[str, Any]:
-            Structured RCA result containing:
-                - root_cause (str)
-                - exact_issue (str)
-                - solution (str)
-                - suggested_fix (str)
-                - confidence (float)
-                - workflow_name (str)
-                - error_message_s (str)
-                - code_s (str)
-                - status_s (str)
-                - Level (str)
-                - knowledge_sources (optional)
-
-    Notes:
-        - LLM execution is protected by a 30-second timeout.
-        - Rule-based analysis is automatically used if AI analysis fails.
-        - Knowledge base enhancement is optional and non-blocking.
-        - The returned dictionary is always guaranteed to contain
-          a non-null suggested_fix field.
+    Generate root cause analysis with comprehensive logging.
+    Logs: Input -> LLM Call -> LLM Response -> Fallback -> KB Enhancement -> Final Output.
     """
     logger.info("=" * 80)
-    logger.info("RCA: Starting analysis for error_type=%s", error_type)
+    logger.info("RCA AGENT - Root Cause Analysis")
     logger.info("=" * 80)
+    
+    # ============================================================
+    # STEP 0: INPUT LOGGING
+    # ============================================================
+    logger.info("RCA INPUT:")
+    logger.info(f"   Error Type: {error_type}")
+    logger.info(f"   Error Message: {error_context.get('error_message', '')[:300]}...")
+    logger.info(f"   Error Code: {error_context.get('error_code', '')}")
+    logger.info(f"   Failed Action: {error_context.get('failed_action_name', '')}")
+    logger.info(f"   Action Type: {error_context.get('action_type', '')}")
+    logger.info("")
 
     system_prompt = (
-        "You are an Azure Logic Apps error analyst. Analyze the error and provide diagnosis. "
-        "Return ONLY valid JSON with keys: root_cause, exact_issue, solution, suggested_fix, confidence (0.0-1.0). "
-        "'suggested_fix' must be a short actionable sentence (max 100 chars). "
-        "Do not include markdown code blocks. Start with { and end with }."
+        "You are an Azure Logic Apps error analyst expert.\n"
+        "Analyze the error and provide a structured diagnosis.\n"
+        "Return ONLY valid JSON with these keys:\n"
+        "- root_cause: short label (max 50 chars)\n"
+        "- exact_issue: what went wrong (1-2 sentences)\n"
+        "- solution: how to solve it (detailed, max 200 chars)\n"
+        "- suggested_fix: quick actionable step (1 sentence, max 100 chars)\n"
+        "- confidence: 0.0-1.0 confidence score\n\n"
+        "Start with { and end with }. No markdown, no code blocks."
     )
 
     user_prompt = f"""
@@ -108,64 +62,116 @@ Action inputs preview: {str(error_context.get('action_inputs', ''))[:300]}
     llm_client = AICoreLLMClient.from_env()
     llm_result = None
 
+    # ============================================================
+    # STEP 1: LLM ANALYSIS
+    # ============================================================
+    logger.info("STEP 1: LLM Analysis")
+    logger.info("-" * 80)
+    logger.info("Sending request to SAP AI Core LLM...")
+    logger.info(f"   System Prompt: {system_prompt[:100]}...")
+    logger.info(f"   User Prompt: {user_prompt[:200]}...")
+    logger.info("")
+
     try:
-        logger.info("RCA: Calling LLM for analysis...")
         llm_result = await asyncio.wait_for(
             llm_client.complete_json(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 required_keys=["root_cause", "exact_issue", "solution", "suggested_fix", "confidence"]
             ),
-            timeout=30.0
+            timeout=100.0
         )
-        if not llm_result or not isinstance(llm_result, dict):
-            raise ValueError("LLM returned invalid result")
-        logger.info("RCA: LLM analysis succeeded")
-        logger.info("   root_cause: %s", llm_result.get("root_cause", "unknown"))
-        logger.info("   suggested_fix: %s", llm_result.get("suggested_fix", "none"))
-        logger.info("   confidence: %.2f", float(llm_result.get("confidence", 0.0)))
-        logger.info("RCA full result: %s", llm_result)
+
+        if llm_result and isinstance(llm_result, dict):
+            logger.info("LLM Call Succeeded")
+            logger.info("RCA LLM RESPONSE:")
+            logger.info(f"   DIAGNOSED ROOT CAUSE: {llm_result.get('root_cause', 'N/A')}")
+            logger.info(f"   EXACT ISSUE: {llm_result.get('exact_issue', 'N/A')[:200]}...")
+            logger.info(f"   SUGGESTED FIX: {llm_result.get('suggested_fix', 'N/A')}")
+            logger.info(f"   CONFIDENCE: {float(llm_result.get('confidence', 0.0))}")
+            logger.info(f"   SOLUTION: {llm_result.get('solution', 'N/A')[:200]}...")
+            logger.info("")
+        else:
+            logger.warning("LLM returned invalid format")
+            llm_result = None
+
     except asyncio.TimeoutError:
-        logger.error("RCA: LLM call timed out after 30 seconds – using fallback")
+        logger.error("LLM call timed out (45 seconds)")
         llm_result = None
     except Exception as e:
-        logger.warning("RCA: LLM failed: %s – using fallback", str(e)[:150])
+        logger.error(f"LLM call failed: {str(e)[:200]}")
         llm_result = None
 
-    # Fallback if LLM failed
+    # ============================================================
+    # STEP 2: FALLBACK (Rule-Based Analysis)
+    # ============================================================
     if llm_result is None:
+        logger.info("STEP 2: No LLM result – returning generic analysis")
+        llm_result = {
+            "root_cause": "unknown",
+            "exact_issue": "Could not determine root cause automatically.",
+            "solution": "Review the action inputs and outputs manually. Enable debug logging.",
+            "suggested_fix": "Manual inspection required.",
+            "confidence": 0.0,
+        }
+
         from utils.error_detector import infer_root_cause, extract_exact_issue, confidence_score
+
         error_msg = error_context.get("error_message", "")
         error_code = error_context.get("error_code", "")
         root_cause = infer_root_cause(error_code, error_msg)
         exact_issue = extract_exact_issue(error_msg, root_cause, error_context)
         confidence = confidence_score(root_cause, error_code, error_msg)
-        # Generate suggested_fix based on root cause
-        if root_cause == "not_found":
-            suggested_fix = "Update the endpoint URL to a valid address."
-        elif root_cause == "auth_or_authorization_error":
-            suggested_fix = "Refresh authentication or check permissions."
-        elif root_cause == "timeout":
-            suggested_fix = "Increase timeout and add a retry policy."
-        elif root_cause in ("payload_or_schema_error", "null_reference_error"):
-            suggested_fix = "Add null/type checks and defaults to the expression."
-        elif root_cause == "throttling":
-            suggested_fix = "Implement exponential backoff retry."
-        elif root_cause == "dns_resolution_error":
-            suggested_fix = "Fix the hostname or DNS configuration."
-        elif root_cause == "connection_refused":
-            suggested_fix = "Check firewall and port accessibility."
-        else:
-            suggested_fix = "Review the action inputs and outputs manually."
+
+        logger.info(f"   Inferred Root Cause: {root_cause}")
+        logger.info(f"   Exact Issue: {exact_issue}")
+        logger.info(f"   Confidence Score: {confidence}")
+        logger.info("")
+
+        # Map root causes to solutions
+        solution_map = {
+            "null_reference_error": "Use coalesce() to provide default values for null references. Guard expressions with empty() checks.",
+            "payload_or_schema_error": "Align request payload with API contract. Ensure all required fields are present and valid.",
+            "timeout": "Increase timeout duration and add a fixed retry policy (3-4 retries with PT30S interval).",
+            "auth_or_authorization_error": "Refresh authentication token or connection secret. Verify service principal has RBAC permissions.",
+            "dns_resolution_error": "Fix the hostname or update DNS resolution path. Check private endpoint configuration.",
+            "connection_refused": "Verify service is running and accessible. Check firewall rules and network security groups.",
+            "not_found": "Validate resource ID, API path, and version. Ensure resource exists in correct subscription/resource group.",
+            "throttling": "Implement exponential backoff retry policy. Honor Retry-After headers from API.",
+            "unknown": "Inspect action inputs/outputs. Enable debug telemetry for detailed diagnostics.",
+        }
+
+        # Map to suggested fixes
+        fix_map = {
+            "null_reference_error": "Add coalesce() guard to null-prone expressions.",
+            "payload_or_schema_error": "Add missing required fields to request.",
+            "timeout": "Add retry policy with 3 attempts and PT30S interval.",
+            "auth_or_authorization_error": "Refresh token and verify RBAC permissions.",
+            "dns_resolution_error": "Fix hostname in endpoint URL.",
+            "connection_refused": "Verify firewall/NSG rules allow connection.",
+            "not_found": "Validate resource ID and API endpoint.",
+            "throttling": "Implement exponential backoff (max 6 retries).",
+            "unknown": "Manual review required.",
+        }
+
+        solution = solution_map.get(root_cause, solution_map["unknown"])
+        suggested_fix = fix_map.get(root_cause, fix_map["unknown"])
+
         llm_result = {
             "root_cause": root_cause,
             "exact_issue": exact_issue,
-            "solution": f"Rule-based analysis: {exact_issue}",
+            "solution": solution,
             "suggested_fix": suggested_fix,
             "confidence": confidence,
         }
-        logger.info("RCA: Using fallback - root_cause=%s, suggested_fix=%s, confidence=%.2f",
-                    root_cause, suggested_fix, confidence)
+
+        logger.info("Fallback Analysis Complete")
+        logger.info("FALLBACK RCA RESULT:")
+        logger.info(f"   DIAGNOSED ROOT CAUSE: {root_cause}")
+        logger.info(f"   EXACT ISSUE: {exact_issue[:200]}...")
+        logger.info(f"   SUGGESTED FIX: {suggested_fix}")
+        logger.info(f"   CONFIDENCE: {confidence} (rule-based)")
+        logger.info("")
 
     # Add extra context fields
     llm_result["workflow_name"] = error_context.get("workflow_name", "unknown")
@@ -176,49 +182,60 @@ Action inputs preview: {str(error_context.get('action_inputs', ''))[:300]}
 
     # Ensure suggested_fix is never None
     if llm_result.get("suggested_fix") is None:
-        llm_result["suggested_fix"] = "No suggested fix available."
+        llm_result["suggested_fix"] = "No suggested fix available. Manual review required."
 
-    # Knowledge base enhancement (optional, runs in thread)
+    # ============================================================
+    # STEP 3: KNOWLEDGE BASE ENHANCEMENT (Optional)
+    # ============================================================
+    logger.info("STEP 3: Knowledge Base Enhancement")
+    logger.info("-" * 80)
+
     try:
-        logger.info("RCA: Searching knowledge base...")
+        logger.info("   Searching HANA knowledge base for similar issues...")
         knowledge = KnowledgeAgent(settings)
         query = f"{error_type} {error_context.get('error_message', '')} {error_context.get('error_code', '')}"
+        
         similar_chunks = await asyncio.to_thread(knowledge.search, query, 3)
+
         if similar_chunks:
-            logger.info("RCA: Found %d knowledge base chunks", len(similar_chunks))
-            kb_text = "\n".join([f"[{i}] {chunk['text'][:200]}" for i, chunk in enumerate(similar_chunks, 1)])
-            enhancement_prompt = f"""
-Based on the following knowledge base content, improve the solution and suggested_fix:
+            logger.info(f"Found {len(similar_chunks)} similar issues in knowledge base")
+            for i, chunk in enumerate(similar_chunks, 1):
+                similarity = chunk.get('similarity', 0)
+                logger.info(f"   Chunk {i}: similarity={similarity:.2f}")
+                # Safely get meta title
+                meta = chunk.get('meta', {})
+                title = meta.get('title', 'Unknown') if isinstance(meta, dict) else 'Unknown'
+                logger.info(f"      Title: {title[:100]}")
+            logger.info("")
 
-{kb_text}
-
-Current solution: {llm_result.get('solution', '')}
-Current suggested_fix: {llm_result.get('suggested_fix', '')}
-
-Return JSON with keys 'solution' and 'suggested_fix'.
-"""
-            try:
-                enhanced = await asyncio.to_thread(
-                    llm_client.complete_json,
-                    system_prompt="You are a technical writer. Improve the solution and suggested fix using knowledge base. Return JSON with keys 'solution' and 'suggested_fix'.",
-                    user_prompt=enhancement_prompt,
-                )
-                if enhanced and isinstance(enhanced, dict):
-                    if "solution" in enhanced:
-                        llm_result["solution"] = enhanced["solution"]
-                    if "suggested_fix" in enhanced:
-                        llm_result["suggested_fix"] = enhanced["suggested_fix"]
-                        logger.info("RCA: Knowledge base enhancement applied to suggested_fix")
-            except Exception as e:
-                logger.warning("RCA: Knowledge enhancement failed: %s", str(e)[:100])
-            llm_result["knowledge_sources"] = [chunk["meta"] for chunk in similar_chunks]
+            # Store knowledge sources in result
+            llm_result["knowledge_sources"] = [
+                {
+                    "similarity": chunk.get('similarity', 0),
+                    "title": chunk.get('meta', {}).get('title', 'Unknown') if isinstance(chunk.get('meta'), dict) else 'Unknown',
+                    "url": chunk.get('meta', {}).get('url', '') if isinstance(chunk.get('meta'), dict) else '',
+                }
+                for chunk in similar_chunks
+            ]
         else:
-            logger.info("RCA: No knowledge base matches found")
-    except Exception as e:
-        logger.warning("RCA: Knowledge base search failed: %s", str(e)[:100])
+            logger.info("No similar issues found in knowledge base")
+            logger.info("")
 
+    except Exception as e:
+        logger.warning(f"Knowledge base search failed: {str(e)[:150]}")
+        logger.info("")
+
+    # ============================================================
+    # FINAL OUTPUT
+    # ============================================================
     logger.info("=" * 80)
-    logger.info("RCA: Complete - root_cause=%s, suggested_fix=%s, confidence=%.2f",
-                llm_result.get("root_cause"), llm_result.get("suggested_fix"), float(llm_result.get("confidence", 0.0)))
+    logger.info("RCA FINAL OUTPUT:")
+    logger.info("-" * 80)
+    logger.info(f"DIAGNOSED ROOT CAUSE: {llm_result.get('root_cause', 'unknown')}")
+    logger.info(f"EXACT ISSUE: {llm_result.get('exact_issue', 'unknown')[:250]}")
+    logger.info(f"SOLUTION: {llm_result.get('solution', 'unknown')[:250]}")
+    logger.info(f"SUGGESTED FIX: {llm_result.get('suggested_fix', 'none')}")
+    logger.info(f"CONFIDENCE SCORE: {float(llm_result.get('confidence', 0.0))}")
     logger.info("=" * 80)
+    
     return llm_result

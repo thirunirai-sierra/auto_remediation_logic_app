@@ -165,6 +165,7 @@ export interface IMessageDetail {
   };
   attachments: unknown[];
   history: IHistoryTimelineEntry[];
+  related_knowledge?: { title: string; content: string; similarity: number }[];
 }
 
 export interface IErrorExplanation {

@@ -38,10 +38,12 @@ tqdm==4.67.3
 typing_extensions==4.15.0
 urllib3==2.6.3
 langchain-aws==0.2.15
-langchain==0.3.27
+# langchain==0.3.27
 langchain-aws==0.2.15
 langchain-community==0.3.29
 langchain-core==0.3.76
 langchain-google-vertexai==2.0.15
-langchain-openai==0.3.33
+# langchain-openai==0.3.33
+langchain>=0.3.0
+langchain-openai>=0.2.0
 

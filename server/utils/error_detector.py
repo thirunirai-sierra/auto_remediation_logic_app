@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import re
-
 from typing import Optional, Sequence, Tuple, Dict, Any
 
-# Local type aliases (previously from agent.observer.models.rca_model)
+from utils.helpers import extract_missing_field, normalize_action_name
+
 Action = Dict[str, Any]
 JSONDict = Dict[str, Any]
 
-# Import helpers from the new utils location
-from utils.helpers import extract_missing_field, normalize_action_name
-
+# Root cause constants
 ROOT_CAUSE_NULL = "null_reference_error"
 ROOT_CAUSE_TIMEOUT = "timeout"
 ROOT_CAUSE_AUTH = "auth_or_authorization_error"
@@ -25,33 +23,19 @@ ROOT_CAUSE_UNKNOWN = "unknown"
 
 def infer_root_cause(code: str, message: str) -> str:
     """
-    Infer the root cause category from an error code and message.
-
-    Uses rule-based pattern matching across:
-    - Azure Logic Apps error codes
-    - HTTP status codes
-    - Regex-based message patterns
+    Infer the root cause category from an error code and message using rule‑based patterns.
 
     Args:
-        code (str): Error code returned by Azure or downstream system.
-        message (str): Error message text.
+        code: Error code (e.g., "NotFound", "InvalidTemplate").
+        message: Human‑readable error message.
 
     Returns:
-        str: Normalized root cause label such as:
-            - null_reference_error
-            - timeout
-            - auth_or_authorization_error
-            - dns_resolution_error
-            - connection_refused
-            - payload_or_schema_error
-            - not_found
-            - throttling
-            - trigger_disabled
-            - unknown
+        One of the ROOT_CAUSE_* constants.
     """
     c = (code or "").upper()
     m = (message or "").upper()
 
+    # Specific exact matches
     if "WORKFLOWTRIGGERISNOTENABLED" in c or "WORKFLOWTRIGGERISNOTENABLED" in m:
         return ROOT_CAUSE_TRIGGER_DISABLED
     if "TOOMANYCONCURRENTREQUESTS" in c or "TOOMANYCONCURRENTREQUESTS" in m:
@@ -59,101 +43,44 @@ def infer_root_cause(code: str, message: str) -> str:
     if re.search(r"\b429\b", m):
         return ROOT_CAUSE_THROTTLING
 
-    specific_patterns: Sequence[Tuple[str, Sequence[str], Sequence[str]]] = (
-        (
-            ROOT_CAUSE_NULL,
-            (
-                r"CONTAINS\(\).*(NULL|NIL)",
-                r"EXPECTS?.*(COLLECTION|ARRAY|OBJECT).*(NULL|NIL)",
-                r"THE TEMPLATE LANGUAGE FUNCTION 'CONTAINS'.*NULL",
-                r"CANNOT ACCESS.*ON A NULL VALUE",
-            ),
-            ("INVALIDTEMPLATE",),
-        ),
-        (
-            ROOT_CAUSE_DNS,
-            (
-                r"UNRESOLVABLEHOSTNAME",
-                r"NAME OR SERVICE NOT KNOWN",
-                r"NO SUCH HOST",
-                r"DNS.*(FAIL|RESOLV)",
-            ),
-            ("UNRESOLVABLEHOSTNAME",),
-        ),
-        (
-            ROOT_CAUSE_CONN_REFUSED,
-            (
-                r"ECONNREFUSED",
-                r"CONNECTION REFUSED",
-                r"TARGET MACHINE ACTIVELY REFUSED",
-            ),
-            ("CONNECTIONREFUSED",),
-        ),
-        (
-            ROOT_CAUSE_THROTTLING,
-            (
-                r"\b429\b",
-                r"TOO MANY REQUESTS",
-                r"RATE LIMIT",
-                r"THROTTL",
-            ),
-            ("TOOMANYREQUESTS", "THROTTLED", "THROTTLING"),
-        ),
-        (
-            ROOT_CAUSE_AUTH,
-            (
-                r"\b401\b",
-                r"\b403\b",
-                r"UNAUTHORIZED",
-                r"FORBIDDEN",
-                r"AUTHORIZATION FAILED",
-                r"INSUFFICIENT PRIVILEGES",
-                r"TOKEN.*(EXPIRED|INVALID)",
-            ),
-            ("UNAUTHORIZED", "FORBIDDEN", "AUTHORIZATIONFAILED"),
-        ),
-        (
-            ROOT_CAUSE_TIMEOUT,
-            (
-                r"\b408\b",
-                r"\b504\b",
-                r"TIMED OUT",
-                r"TIMEOUT",
-                r"REQUEST TIMEOUT",
-            ),
-            ("TIMEOUT", "REQUESTTIMEOUT", "GATEWAYTIMEOUT"),
-        ),
-        (
-            ROOT_CAUSE_NOT_FOUND,
-            (
-                r"\b404\b",
-                r"NOT FOUND",
-                r"DOES NOT EXIST",
-                r"RESOURCE.*NOT FOUND",
-            ),
-            ("NOTFOUND", "RESOURCENOTFOUND"),
-        ),
-        (
-            ROOT_CAUSE_SCHEMA,
-            (
-                r"BAD REQUEST",
-                r"\b400\b",
-                r"INVALID",
-                r"MALFORMED",
-                r"SCHEMA",
-                r"IS REQUIRED",
-            ),
-            ("BADREQUEST", "INVALIDTEMPLATE", "INVALIDREQUESTCONTENT"),
-        ),
+    # Pattern groups: (cause, message_patterns, code_tokens)
+    patterns = (
+        (ROOT_CAUSE_NULL,
+         (r"CONTAINS\(\).*(NULL|NIL)", r"EXPECTS?.*(COLLECTION|ARRAY|OBJECT).*(NULL|NIL)",
+          r"THE TEMPLATE LANGUAGE FUNCTION 'CONTAINS'.*NULL", r"CANNOT ACCESS.*ON A NULL VALUE"),
+         ("INVALIDTEMPLATE",)),
+        (ROOT_CAUSE_DNS,
+         (r"UNRESOLVABLEHOSTNAME", r"NAME OR SERVICE NOT KNOWN", r"NO SUCH HOST", r"DNS.*(FAIL|RESOLV)"),
+         ("UNRESOLVABLEHOSTNAME",)),
+        (ROOT_CAUSE_CONN_REFUSED,
+         (r"ECONNREFUSED", r"CONNECTION REFUSED", r"TARGET MACHINE ACTIVELY REFUSED"),
+         ("CONNECTIONREFUSED",)),
+        (ROOT_CAUSE_THROTTLING,
+         (r"\b429\b", r"TOO MANY REQUESTS", r"RATE LIMIT", r"THROTTL"),
+         ("TOOMANYREQUESTS", "THROTTLED", "THROTTLING")),
+        (ROOT_CAUSE_AUTH,
+         (r"\b401\b", r"\b403\b", r"UNAUTHORIZED", r"FORBIDDEN", r"AUTHORIZATION FAILED",
+          r"INSUFFICIENT PRIVILEGES", r"TOKEN.*(EXPIRED|INVALID)"),
+         ("UNAUTHORIZED", "FORBIDDEN", "AUTHORIZATIONFAILED")),
+        (ROOT_CAUSE_TIMEOUT,
+         (r"\b408\b", r"\b504\b", r"TIMED OUT", r"TIMEOUT", r"REQUEST TIMEOUT"),
+         ("TIMEOUT", "REQUESTTIMEOUT", "GATEWAYTIMEOUT")),
+        (ROOT_CAUSE_NOT_FOUND,
+         (r"\b404\b", r"NOT FOUND", r"DOES NOT EXIST", r"RESOURCE.*NOT FOUND"),
+         ("NOTFOUND", "RESOURCENOTFOUND")),
+        (ROOT_CAUSE_SCHEMA,
+         (r"BAD REQUEST", r"\b400\b", r"INVALID", r"MALFORMED", r"SCHEMA", r"IS REQUIRED"),
+         ("BADREQUEST", "INVALIDTEMPLATE", "INVALIDREQUESTCONTENT")),
     )
 
-    for cause, message_patterns, code_tokens in specific_patterns:
-        if any(token in c for token in code_tokens):
+    for cause, msg_patterns, code_tokens in patterns:
+        if any(tok in c for tok in code_tokens):
             if cause != ROOT_CAUSE_SCHEMA:
                 return cause
+            # For schema, ensure it's not a null error that was mis‑classified
             if ROOT_CAUSE_NULL not in (infer_root_cause("", message),):
                 return cause
-        if any(re.search(p, m, re.I) for p in message_patterns):
+        if any(re.search(p, m, re.I) for p in msg_patterns):
             return cause
 
     return ROOT_CAUSE_UNKNOWN
@@ -161,14 +88,14 @@ def infer_root_cause(code: str, message: str) -> str:
 
 def detect_null_source(message: str, flow_context: Optional[JSONDict]) -> Optional[str]:
     """
-    Attempt to identify the source expression that caused a null reference error.
+    Attempt to find the source expression that caused a null reference error.
 
     Args:
-        message (str): Error message string.
-        flow_context (Optional[JSONDict]): Execution context of workflow.
+        message: Error message text.
+        flow_context: Optional workflow execution context.
 
     Returns:
-        Optional[str]: Expression causing null usage (if found), otherwise None.
+        Expression like "outputs('some_action')" or None.
     """
     expr = re.search(r"outputs\('([^']+)'\)", message or "", re.I)
     if expr:
@@ -186,15 +113,15 @@ def detect_null_source(message: str, flow_context: Optional[JSONDict]) -> Option
 
 def extract_exact_issue(message: str, root_cause: str, flow_context: Optional[JSONDict] = None) -> str:
     """
-    Generate a human-readable explanation of the failure.
+    Generate a human‑readable explanation of the failure.
 
     Args:
-        message (str): Raw error message.
-        root_cause (str): Classified root cause label.
-        flow_context (Optional[JSONDict]): Optional workflow execution context.
+        message: Raw error message.
+        root_cause: Classified root cause (one of ROOT_CAUSE_*).
+        flow_context: Optional workflow context (used for null detection).
 
     Returns:
-        str: Simplified explanation of the failure suitable for RCA output.
+        Concise explanation of the issue.
     """
     m = (message or "").strip()
     if root_cause == ROOT_CAUSE_NULL:
@@ -228,20 +155,21 @@ def extract_exact_issue(message: str, root_cause: str, flow_context: Optional[JS
 
 def confidence_score(root_cause: str, code: str, message: str) -> float:
     """
-    Compute confidence score for inferred root cause classification.
+    Compute a confidence score for the inferred root cause (0.0 – 0.99).
 
     Args:
-        root_cause (str): Predicted root cause label.
-        code (str): Error code.
-        message (str): Error message.
+        root_cause: Classified root cause.
+        code: Original error code.
+        message: Original error message.
 
     Returns:
-        float: Confidence score between 0.0 and 0.99.
+        Confidence score (higher = more confident).
     """
     c = (code or "").upper()
     m = (message or "").upper()
     if root_cause == ROOT_CAUSE_UNKNOWN:
         return 0.35
+
     score = 0.72
     if root_cause == ROOT_CAUSE_NULL and ("INVALIDTEMPLATE" in c and "NULL" in m):
         score = 0.95
@@ -271,14 +199,12 @@ def extract_error_location(
     Identify the failing action name and type from error context.
 
     Args:
-        action (Action): Azure Logic App action payload.
-        message (str): Error message.
-        flow_context (Optional[JSONDict]): Optional execution metadata.
+        action: Azure Logic App action payload.
+        message: Error message.
+        flow_context: Optional workflow context.
 
     Returns:
-        Tuple[str, str]:
-            - action_name (str)
-            - action_type (str)
+        Tuple (action_name, action_type).
     """
     action_name = normalize_action_name(str(action.get("name") or ""))
     action_type = extract_action_type(action, flow_context)
@@ -301,13 +227,13 @@ def extract_error_location(
 
 def extract_error_code(action: Action) -> str:
     """
-    Extract error code from nested Azure action response structures.
+    Extract the first available error code from a Logic App action.
 
     Args:
-        action (Action): Azure Logic App action object.
+        action: Action resource dictionary.
 
     Returns:
-        str: Extracted error code or empty string if not found.
+        Error code string, or empty string if none found.
     """
     props = action.get("properties") or {}
     err = props.get("error") if isinstance(props.get("error"), dict) else action.get("error")
@@ -328,13 +254,13 @@ def extract_error_code(action: Action) -> str:
 
 def extract_error_message(action: Action) -> str:
     """
-    Extract error message from Azure action response.
+    Extract the first available error message from a Logic App action.
 
     Args:
-        action (Action): Azure Logic App action object.
+        action: Action resource dictionary.
 
     Returns:
-        str: Error message string or empty string if unavailable.
+        Error message string, or empty string if none found.
     """
     props = action.get("properties") or {}
     err = props.get("error") if isinstance(props.get("error"), dict) else action.get("error")
@@ -357,14 +283,14 @@ def extract_error_message(action: Action) -> str:
 
 def extract_action_type(action: Action, flow_context: Optional[JSONDict]) -> str:
     """
-    Determine the type of Azure Logic App action.
+    Determine the type of an Azure Logic App action.
 
     Args:
-        action (Action): Action object.
-        flow_context (Optional[JSONDict]): Optional workflow context.
+        action: Action resource.
+        flow_context: Optional workflow context.
 
     Returns:
-        str: Action type or 'unknown' if not available.
+        Action type (e.g., "ApiConnection", "Http", "If") or "unknown".
     """
     if action.get("type"):
         return str(action.get("type"))
@@ -380,13 +306,13 @@ def extract_action_type(action: Action, flow_context: Optional[JSONDict]) -> str
 
 def is_complex_case(root_cause: str) -> bool:
     """
-    Determine whether a root cause requires advanced handling.
+    Determine whether a root cause requires advanced handling (e.g., LLM).
 
     Args:
-        root_cause (str): Root cause classification.
+        root_cause: Classified root cause.
 
     Returns:
-        bool: True if case is considered complex, otherwise False.
+        True if the case is considered complex, otherwise False.
     """
     return root_cause in {
         ROOT_CAUSE_UNKNOWN,
