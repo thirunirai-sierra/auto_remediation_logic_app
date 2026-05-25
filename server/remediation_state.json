@@ -717,16 +717,16 @@
     "08584219032264998160537622114CU03": {
       "run_id": "08584219032264998160537622114CU03",
       "workflow_name": "Teams-FLOW",
-      "attempted_at": "2026-05-25T16:08:39.988660",
+      "attempted_at": "2026-05-25T17:03:55.755096",
       "error_type": "bad_request",
       "status": "attempted",
       "current_run_status": "unknown",
       "retry_count": 0,
-      "last_attempt_at": "2026-05-25T16:08:39.988660",
+      "last_attempt_at": "2026-05-25T17:03:55.755096",
       "auto_fix_attempted": true,
       "auto_fix_success": false,
       "fix_strategy": null,
-      "root_cause": "Invalid HTTP verb in action inputs"
+      "root_cause": "Typo in HTTP method ('posts' vs 'POST')"
     },
     "08584219087633807527254036211CU13": {
       "run_id": "08584219087633807527254036211CU13",
@@ -741,6 +741,20 @@
       "auto_fix_success": false,
       "fix_strategy": null,
       "root_cause": "HTTP method typo 'posts' in ApiConnection"
+    },
+    "08584218981816480037751691663CU11": {
+      "run_id": "08584218981816480037751691663CU11",
+      "workflow_name": "testflow",
+      "attempted_at": "2026-05-25T17:08:50.898867",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-25T17:08:50.898867",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "All dependent actions failed/skipped"
     }
   },
   "workflow_states": {
@@ -766,25 +780,25 @@
     },
     "testflow": {
       "workflow_name": "testflow",
-      "last_fixed_at": "2026-05-25T15:45:29.154659",
-      "last_fixed_run_id": "08584219074751378118012238741CU20",
+      "last_fixed_at": "2026-05-25T17:08:50.898867",
+      "last_fixed_run_id": "08584218981816480037751691663CU11",
       "error_type_fixed": "bad_request",
       "workflow_hash": "",
-      "fix_count": 42,
+      "fix_count": 43,
       "last_fix_strategy": null,
-      "last_root_cause": "Invalid/empty file path in Get file content"
+      "last_root_cause": "All dependent actions failed/skipped"
     },
     "Teams-FLOW": {
       "workflow_name": "Teams-FLOW",
-      "last_fixed_at": "2026-05-25T16:08:39.988660",
+      "last_fixed_at": "2026-05-25T17:03:55.755096",
       "last_fixed_run_id": "08584219032264998160537622114CU03",
       "error_type_fixed": "bad_request",
       "workflow_hash": "",
-      "fix_count": 10,
+      "fix_count": 11,
       "last_fix_strategy": null,
-      "last_root_cause": "Invalid HTTP verb in action inputs"
+      "last_root_cause": "Typo in HTTP method ('posts' vs 'POST')"
     }
   },
   "workflow_hashes": {},
-  "last_updated": "2026-05-25T16:08:39.989644"
+  "last_updated": "2026-05-25T17:08:50.898867"
 }
