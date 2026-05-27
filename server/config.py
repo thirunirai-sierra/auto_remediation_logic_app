@@ -2,7 +2,6 @@
 """
 Application configuration loaded from environment variables.
 """
-import os
 from pathlib import Path
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
@@ -57,13 +56,11 @@ class Settings(BaseSettings):
     VECTOR_DIMENSION: int = 3072
 
     # Multi‑flow settings
-    LOOKBACK_HOURS: int = 24
-    MAX_CONCURRENCY: int = 6
+    LOOKBACK_HOURS: float
+    
 
-    VERIFY_FIX_WITH_TEST_RUN: bool = False
+    
     # Add these inside Settings class
-    FALLBACK_HTTP_URL: str = "https://httpbin.org/status/200"
-    HTTP_TIMEOUT_ISO: str = "PT2M"
     DRY_RUN: bool = False
     TRACKER_RETENTION_DAYS: int = 90
     TRACKER_MAX_RETRY_COUNT: int = 2

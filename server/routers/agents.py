@@ -2,16 +2,16 @@
 """
 AI Agents API Routes - Minimal endpoints (1 GET, 1 POST per agent)
 """
-import logging
-from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
-from typing import Optional, Dict, Any
+import logging,asyncio
+from fastapi import APIRouter, Query
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 from datetime import datetime
 
 from config import get_settings
 from services.agents.orchestrator import Orchestrator
-from services.agents.classifier.analyzer import analyze_error, classify_error
-from services.agents.fixer.Fixer_agent import FixerAgent, get_fixer
+from services.agents.classifier.analyzer import analyze_error
+from services.agents.fixer.Fixer_agent import get_fixer
 from services.agents.knowledge.knowledge_base import KnowledgeAgent
 from services.agents.observer import Observer
 from services.agents.rca.engine import generate_rca
@@ -20,11 +20,7 @@ from services.remediation_tracker import get_tracker
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents", tags=["AI Agents"])
 settings = get_settings()
-
-
-# ============================================================================
 # Request/Response Models
-# ============================================================================
 
 class RemediateRequest(BaseModel):
     workflow_name: str
@@ -47,9 +43,13 @@ class FixRequest(BaseModel):
     resource_group: str
     root_cause: str
     exact_issue: str
-    failed_action_name: Optional[str] 
-    action_type: Optional[str] = "http"  
-    action_config: Optional[Dict[str, Any]] = Field(default_factory=dict) 
+    failed_action_name: Optional[str]
+    action_type: Optional[str] = "http"
+    action_config: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    remediation_strategies: Optional[List[str]] = Field(
+        default=None,
+        description="Optional subset of strategy ids (see GET /fixer/strategies), e.g. action_retry_policy.",
+    )
 
 
 class RCARequest(BaseModel):
@@ -72,9 +72,7 @@ class KnowledgeSearchRequest(BaseModel):
     top_k: int = 5
 
 
-# ============================================================================
 # 1. ORCHESTRATOR AGENT (Full remediation pipeline)
-# ============================================================================
 
 @router.post("/orchestrator")
 async def orchestrator_remediate(request: RemediateRequest):
@@ -123,9 +121,7 @@ async def orchestrator_status(workflow_name: str, run_id: str):
     return {"found": False, "run_id": run_id}
 
 
-# ============================================================================
 # 2. CLASSIFIER AGENT (Error classification)
-# ============================================================================
 
 @router.post("/classifier")
 async def classifier_analyze(request: AnalyzeRequest):
@@ -175,9 +171,9 @@ async def classifier_get(error_code: str):
     }
 
 
-# ============================================================================
+ 
 # 3. FIXER AGENT (Generate and apply fixes)
-# ============================================================================
+
 
 @router.post("/fixer")
 async def fixer_apply(request: FixRequest):
@@ -201,11 +197,14 @@ async def fixer_apply(request: FixRequest):
         "error_type": request.action_type or "http",
         "suggested_fix": request.exact_issue,
     }
-    
+
+    if request.remediation_strategies:
+        workflow_context["remediation_strategies"] = request.remediation_strategies
+
     if request.action_config:
         workflow_context["action_config"] = request.action_config
     
-    import asyncio
+    
     result = await asyncio.to_thread(fixer.fix, rca_result, workflow_context)  # ← FIXED
     
     return {
@@ -219,24 +218,8 @@ async def fixer_apply(request: FixRequest):
     }
 
 
-@router.get("/fixer/strategies")
-async def fixer_strategies():
-    """Get all available fix strategies"""
-    return {
-        "strategies": [
-            {"name": "contains_null_guard", "description": "Fix contains() null errors", "risk": "low"},
-            {"name": "retry_fixed", "description": "Add fixed retry policy for timeouts", "risk": "low"},
-            {"name": "retry_exponential", "description": "Add exponential backoff for throttling", "risk": "low"},
-            {"name": "div_zero_guard", "description": "Guard against divide-by-zero", "risk": "low"},
-            {"name": "auth_connection_check", "description": "Flag for auth verification", "risk": "low"},
-            {"name": "url_fallback", "description": "Update to fallback endpoint", "risk": "medium"},
-        ]
-    }
 
-
-# ============================================================================
 # 4. RCA AGENT (Root Cause Analysis)
-# ============================================================================
 
 @router.post("/rca")
 async def rca_generate(request: RCARequest):
@@ -291,10 +274,7 @@ async def rca_quick(error_type: str, error_message: str = Query(...)):
         }.get(error_type, "Manual review required")
     }
 
-
-# ============================================================================
 # 5. OBSERVER AGENT (Run inspection)
-# ============================================================================
 
 @router.post("/observer")
 async def observer_analyze(request: ObserveRequest):
@@ -356,10 +336,7 @@ async def observer_get(
         "error_context": result.get("error_context"),
     }
 
-
-# ============================================================================
 # 6. VERIFIER AGENT (Fix verification)
-# ============================================================================
 
 class VerifyRequest(BaseModel):
     workflow_name: str
@@ -451,11 +428,7 @@ async def verifier_check(workflow_name: str):
         "note": "Use POST /verifier to actually trigger verification"
     }
 
-
-# ============================================================================
 # 7. KNOWLEDGE AGENT (Documentation search)
-# ============================================================================
-
 @router.post("/knowledge")
 async def knowledge_search(request: KnowledgeSearchRequest):
     """
@@ -497,9 +470,7 @@ async def knowledge_stats():
     }
 
 
-# ============================================================================
 # 8. HEALTH CHECK (All agents)
-# ============================================================================
 
 @router.get("/health")
 async def agents_health():
