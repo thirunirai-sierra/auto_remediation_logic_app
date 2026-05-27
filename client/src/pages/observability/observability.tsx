@@ -1293,10 +1293,18 @@ export default function Observability() {
 
                   {activeTab === "attachments" && (
                     <div className={styles.tabContent}>
-                      {detail.attachments?.length > 0 ? (
-                        <div>Attachments available: {detail.attachments.length}</div>
+                      {detail.related_knowledge && detail.related_knowledge.length > 0 ? (
+                        <div className={styles.knowledgeList}>
+                          {detail.related_knowledge.map((k, idx) => (
+                            <div key={idx} className={styles.knowledgeCard}>
+                              <div className={styles.knowledgeTitle}>{k.title}</div>
+                              <div className={styles.knowledgeContent}>{k.content}</div>
+                              <div className={styles.knowledgeSimilarity}>Relevance: {k.similarity}%</div>
+                            </div>
+                          ))}
+                        </div>
                       ) : (
-                        <div className={styles.emptyTab}>No attachments available for this message.</div>
+                        <div className={styles.emptyTab}>No related knowledge found for this error.</div>
                       )}
                     </div>
                   )}
