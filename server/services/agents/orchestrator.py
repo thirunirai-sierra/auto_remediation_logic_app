@@ -3,20 +3,22 @@
 Orchestrator agent: coordinates the entire remediation process.
 """
 
-import asyncio
-import json
-import logging
-import time
+import asyncio,time,json,logging,httpx
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, List
-
+from typing import Any, Dict, Optional
+from services.agents.fixer.Fixer_agent import FixerAgent
+from db.hana_client import get_global_client
+from utils.error_detector import infer_root_cause, extract_exact_issue, confidence_score
 from services.agents.observer import Observer
 from services.agents.classifier.analyzer import classify_error
 from services.remediation_tracker import get_tracker
+from services.agents.rca.engine import generate_rca
+from services.auth import get_arm_token
+from services.workflow_service import list_runs, get_run, list_run_actions,should_skip_remediate_newer_succeeded 
 from config import Settings, get_settings
 
 try:
-    from services.agents.rca.engine import generate_rca
+    
     RCA_AVAILABLE = True
 except ImportError as e:
     logger = logging.getLogger(__name__)
@@ -25,7 +27,6 @@ except ImportError as e:
     generate_rca = None
 
 try:
-    from services.agents.fixer.Fixer_agent import FixerAgent
     FIXER_AVAILABLE = True
 except ImportError as e:
     logger = logging.getLogger(__name__)
@@ -72,8 +73,6 @@ class Orchestrator:
             description: Human‑readable description.
             status: "completed", "failed", etc.
         """
-        from db.hana_client import get_global_client
-
         client = get_global_client()
         if not client or not client._ensure_connected():
             logger.warning("Cannot append history: HANA client not available")
@@ -88,7 +87,7 @@ class Orchestrator:
                 "step": step,
                 "description": description,
                 "status": status,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
             cur.execute(
                 f"UPDATE {client.full_table} SET HISTORY_ENTRIES = ? WHERE INCIDENT_ID = ?",
@@ -112,7 +111,6 @@ class Orchestrator:
             RCA result with keys: root_cause, exact_issue, confidence,
             solution, suggested_fix.
         """
-        from utils.error_detector import infer_root_cause, extract_exact_issue, confidence_score
 
         error_msg = error_context.get("error_message", "")
         error_code = error_context.get("error_code", "")
@@ -208,9 +206,6 @@ class Orchestrator:
         Returns:
             Dictionary with keys: success (bool), status_code (if failed), body (if failed).
         """
-        from services.auth import get_arm_token
-        import httpx
-
         token = get_arm_token(
             self.settings.AZURE_TENANT_ID,
             self.settings.AZURE_CLIENT_ID,
@@ -253,9 +248,6 @@ class Orchestrator:
             Dictionary with keys: verified (bool), method="resubmit", run_id,
             run_status, actions_executed, reason.
         """
-        from services.auth import get_arm_token
-        from services.workflow_service import list_runs, get_run, list_run_actions
-
         token = get_arm_token(
             self.settings.AZURE_TENANT_ID,
             self.settings.AZURE_CLIENT_ID,
@@ -351,9 +343,6 @@ class Orchestrator:
 
         # 1. Skip if a newer run succeeded
         if getattr(self.settings, "SKIP_IF_NEWER_RUN_SUCCEEDED", True):
-            from services.auth import get_arm_token
-            from services.workflow_service import should_skip_remediate_newer_succeeded
-
             try:
                 token = get_arm_token(
                     self.settings.AZURE_TENANT_ID,
@@ -481,7 +470,7 @@ class Orchestrator:
                 "workflow_name": workflow_name,
                 "run_id": run_id,
                 "error_type": error_type,
-                "error": "Fixer not available",
+                "error": "Fixer not available"
             }
 
         workflow_context = {
@@ -494,7 +483,7 @@ class Orchestrator:
             "backup_dir": backup_dir,
             "suggested_fix": rca_result.get("suggested_fix"),
             "error_type": error_type,
-            "error_context": error_ctx,
+            "error_context": error_ctx
         }
 
         try:
@@ -506,7 +495,7 @@ class Orchestrator:
                 "workflow_name": workflow_name,
                 "run_id": run_id,
                 "error_type": error_type,
-                "error": str(e),
+                "error": str(e)
             }
 
         if not fix_result.get("success"):
@@ -517,7 +506,7 @@ class Orchestrator:
                 "run_id": run_id,
                 "error_type": error_type,
                 "suggested_fix": rca_result.get("suggested_fix"),
-                "error": fix_result.get("error"),
+                "error": fix_result.get("error")
             }
 
         self.tracker.mark_run_remediated(
@@ -534,7 +523,7 @@ class Orchestrator:
             run_id,
             "Auto-Fix Applied",
             f"Fix strategy: {fix_result.get('fix_strategy', {}).get('strategy_description', 'unknown')}",
-            "completed",
+            "completed"
         )
 
         return {
@@ -545,5 +534,5 @@ class Orchestrator:
             "root_cause": rca_result.get("root_cause"),
             "suggested_fix": rca_result.get("suggested_fix"),
             "fix_strategy": fix_result.get("fix_strategy"),
-            "changes_applied": fix_result.get("changes_applied"),
+            "changes_applied": fix_result.get("changes_applied")
         }

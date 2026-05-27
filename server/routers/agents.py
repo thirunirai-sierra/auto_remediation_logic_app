@@ -2,7 +2,7 @@
 """
 AI Agents API Routes - Minimal endpoints (1 GET, 1 POST per agent)
 """
-import logging
+import logging,asyncio
 from fastapi import APIRouter, Query
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
@@ -10,8 +10,8 @@ from datetime import datetime
 
 from config import get_settings
 from services.agents.orchestrator import Orchestrator
-from services.agents.classifier.analyzer import analyze_error, classify_error
-from services.agents.fixer.Fixer_agent import FixerAgent, get_fixer
+from services.agents.classifier.analyzer import analyze_error
+from services.agents.fixer.Fixer_agent import get_fixer
 from services.agents.knowledge.knowledge_base import KnowledgeAgent
 from services.agents.observer import Observer
 from services.agents.rca.engine import generate_rca
@@ -204,7 +204,7 @@ async def fixer_apply(request: FixRequest):
     if request.action_config:
         workflow_context["action_config"] = request.action_config
     
-    import asyncio
+    
     result = await asyncio.to_thread(fixer.fix, rca_result, workflow_context)  # ← FIXED
     
     return {

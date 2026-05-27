@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
-import json
-import logging
-import requests
+import json,requests,logging
 from datetime import datetime, timezone
 
 from config import get_settings

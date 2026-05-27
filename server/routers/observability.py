@@ -166,7 +166,7 @@ async def get_monitor_message_detail(incident_id: str):
                 {
                     "title": chunk["meta"].get("title", "Knowledge entry"),
                     "content": chunk["text"][:500],
-                    "similarity": round(chunk["similarity"], 1),
+                    "similarity": round(chunk["similarity"], 1)
                 }
                 for chunk in similar
             ]

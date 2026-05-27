@@ -3,16 +3,13 @@ Hybrid error analysis engine: rule‑based signal extraction + deterministic rec
 LLM enrichment for accurate classification. Returns structured analysis dict for the orchestrator.
 """
 
-import json
-import logging
-import re
+import json,re,logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from utils.llm_client import AICoreLLMClient
 from utils.error_detector import (
     infer_root_cause,
-    extract_exact_issue,
     confidence_score,
     is_complex_case,
 )

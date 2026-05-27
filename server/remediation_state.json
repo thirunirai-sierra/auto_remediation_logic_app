@@ -755,6 +755,104 @@
       "auto_fix_success": false,
       "fix_strategy": null,
       "root_cause": "All dependent actions failed/skipped"
+    },
+    "08584218370504479749529781887CU21": {
+      "run_id": "08584218370504479749529781887CU21",
+      "workflow_name": "File-upload",
+      "attempted_at": "2026-05-27T11:42:13.262777",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-27T11:42:13.262777",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "null_reference_error"
+    },
+    "08584217467011792612153867663CU21": {
+      "run_id": "08584217467011792612153867663CU21",
+      "workflow_name": "File-upload",
+      "attempted_at": "2026-05-27T12:08:09.119228",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-27T12:08:09.119228",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "null_reference_error"
+    },
+    "08584217435428815802255565701CU11": {
+      "run_id": "08584217435428815802255565701CU11",
+      "workflow_name": "File-upload",
+      "attempted_at": "2026-05-27T12:14:29.583428",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-27T12:14:29.583428",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Selecting 'value' on array output"
+    },
+    "08584217429097565830487084944CU16": {
+      "run_id": "08584217429097565830487084944CU16",
+      "workflow_name": "testflow",
+      "attempted_at": "2026-05-27T12:27:08.764997",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-27T12:27:08.764997",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Missing/invalid file path from dependency"
+    },
+    "08584217429052719124201428001CU25": {
+      "run_id": "08584217429052719124201428001CU25",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-05-27T12:28:30.663996",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-27T12:28:30.663996",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Unsatisfied runAfter conditions"
+    },
+    "08584217428521608336553880715CU27": {
+      "run_id": "08584217428521608336553880715CU27",
+      "workflow_name": "Teams-FLOW",
+      "attempted_at": "2026-05-27T12:29:36.660726",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-27T12:29:36.660726",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Invalid HTTP method in connector call"
+    },
+    "08584217412971097820096170006CU16": {
+      "run_id": "08584217412971097820096170006CU16",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-05-27T12:39:27.044792",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-27T12:39:27.044792",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Upstream dependency did not succeed"
     }
   },
   "workflow_states": {
@@ -770,35 +868,45 @@
     },
     "gdrive-logic-app": {
       "workflow_name": "gdrive-logic-app",
-      "last_fixed_at": "2026-05-25T15:51:05.742491",
-      "last_fixed_run_id": "08584219080571915758178283669CU22",
+      "last_fixed_at": "2026-05-27T12:39:27.044792",
+      "last_fixed_run_id": "08584217412971097820096170006CU16",
       "error_type_fixed": "bad_request",
       "workflow_hash": "",
-      "fix_count": 54,
+      "fix_count": 56,
       "last_fix_strategy": null,
-      "last_root_cause": "Unsatisfied runAfter dependencies"
+      "last_root_cause": "Upstream dependency did not succeed"
     },
     "testflow": {
       "workflow_name": "testflow",
-      "last_fixed_at": "2026-05-25T17:08:50.898867",
-      "last_fixed_run_id": "08584218981816480037751691663CU11",
+      "last_fixed_at": "2026-05-27T12:27:08.764997",
+      "last_fixed_run_id": "08584217429097565830487084944CU16",
       "error_type_fixed": "bad_request",
       "workflow_hash": "",
-      "fix_count": 43,
+      "fix_count": 44,
       "last_fix_strategy": null,
-      "last_root_cause": "All dependent actions failed/skipped"
+      "last_root_cause": "Missing/invalid file path from dependency"
     },
     "Teams-FLOW": {
       "workflow_name": "Teams-FLOW",
-      "last_fixed_at": "2026-05-25T17:03:55.755096",
-      "last_fixed_run_id": "08584219032264998160537622114CU03",
+      "last_fixed_at": "2026-05-27T12:29:36.660726",
+      "last_fixed_run_id": "08584217428521608336553880715CU27",
       "error_type_fixed": "bad_request",
       "workflow_hash": "",
-      "fix_count": 11,
+      "fix_count": 12,
       "last_fix_strategy": null,
-      "last_root_cause": "Typo in HTTP method ('posts' vs 'POST')"
+      "last_root_cause": "Invalid HTTP method in connector call"
+    },
+    "File-upload": {
+      "workflow_name": "File-upload",
+      "last_fixed_at": "2026-05-27T12:14:29.583428",
+      "last_fixed_run_id": "08584217435428815802255565701CU11",
+      "error_type_fixed": "bad_request",
+      "workflow_hash": "",
+      "fix_count": 3,
+      "last_fix_strategy": null,
+      "last_root_cause": "Selecting 'value' on array output"
     }
   },
   "workflow_hashes": {},
-  "last_updated": "2026-05-25T17:08:50.898867"
+  "last_updated": "2026-05-27T12:39:27.044792"
 }

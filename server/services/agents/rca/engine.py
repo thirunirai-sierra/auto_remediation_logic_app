@@ -2,9 +2,8 @@
 Root Cause Analysis (RCA) engine powered by LLM and knowledge base enhancement.
 With comprehensive logging of diagnosis and suggested fix.
 """
-import asyncio
-import logging
-from typing import Any, Dict, Optional
+import asyncio,logging
+from typing import Any, Dict
 
 from utils.llm_client import AICoreLLMClient
 from services.agents.knowledge.knowledge_base import KnowledgeAgent

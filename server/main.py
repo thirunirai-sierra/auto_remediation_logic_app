@@ -1,22 +1,18 @@
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
-import uuid
+import asyncio,json,logging,uuid,os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import dashboard
 from config import get_settings
-from routers import api_ingest, observability, knowledge, workflow
+from routers import api_ingest, observability, knowledge, workflow,agents,dashboard
 from services.agents.orchestrator import Orchestrator
 from services.workflow_service import get_workflow
 from services.auth import get_arm_token
 from db.hana_client import get_global_client
-from routers import agents
+from routers.api_ingest import query_log_analytics_range
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger(__name__)
@@ -40,7 +36,6 @@ async def continuous_monitor(settings):
         settings: Application settings (used for Log Analytics workspace ID,
                   lookback hours, and Azure credentials).
     """
-    from routers.api_ingest import query_log_analytics_range
 
     logger.info("=" * 80)
     logger.info("Continuous monitor started – polling every 60 seconds")
@@ -295,6 +290,5 @@ async def root():
 
 
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
