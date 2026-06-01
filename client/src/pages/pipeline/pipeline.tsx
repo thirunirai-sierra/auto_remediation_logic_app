@@ -15,11 +15,11 @@ const styles = _styles as Record<string, string>;
 
 // ── Agent metadata (5 specialist agents) ─────────────────────────────────────
 const SPECIALIST_AGENTS: Record<string, { icon: IconName; label: string; desc: string; tools: string; gradient: string; accent: string }> = {
-  observer:   { icon:"eye",          label:"Observer",   desc:"Monitors SAP CPI for failed messages, creates incidents",              tools:"3 local tools",    gradient:"linear-gradient(135deg,#eef2ff 0%,#dbeafe 100%)", accent:"#3b82f6" },
-  classifier: { icon:"tag",          label:"Classifier", desc:"Classifies error type + confidence — rule-based, zero LLM cost",      tools:"3 local + 1 MCP",  gradient:"linear-gradient(135deg,#faf5ff 0%,#ede9fe 100%)", accent:"#8b5cf6" },
-  rca:        { icon:"rca",          label:"RCA",        desc:"Root cause analysis: vector store + message logs + iFlow inspection", tools:"3 local + 2-3 MCP", gradient:"linear-gradient(135deg,#f0fdf4 0%,#dcfce7 100%)", accent:"#16a34a" },
-  fixer:      { icon:"wrench",       label:"Fixer",      desc:"Get → validate → update → deploy iFlow with XML safety checks",      tools:"2 local + 6-8 MCP", gradient:"linear-gradient(135deg,#fff7ed 0%,#fed7aa 100%)", accent:"#ea580c" },
-  verifier:   { icon:"check-circle", label:"Verifier",   desc:"Test fixed iFlow + replay failed messages for end-to-end verification", tools:"1 local + 3-4 MCP", gradient:"linear-gradient(135deg,#f0fdf4 0%,#bbf7d0 100%)", accent:"#15803d" },
+  observer:   { icon:"eye",          label:"Observer",   desc:"Monitors Azure Log Analytics for failed workflow runs, creates incidents",                 tools:"3 local tools",    gradient:"linear-gradient(135deg,#eef2ff 0%,#dbeafe 100%)", accent:"#3b82f6" },
+  classifier: { icon:"tag",          label:"Classifier", desc:"Classifies error type + confidence — rule-based, zero LLM cost",                         tools:"3 local + 1 MCP",  gradient:"linear-gradient(135deg,#faf5ff 0%,#ede9fe 100%)", accent:"#8b5cf6" },
+  rca:        { icon:"rca",          label:"RCA",        desc:"Root cause analysis: vector store + run logs + workflow definition inspection",            tools:"3 local + 2-3 MCP", gradient:"linear-gradient(135deg,#f0fdf4 0%,#dcfce7 100%)", accent:"#16a34a" },
+  fixer:      { icon:"wrench",       label:"Fixer",      desc:"Get → validate → patch → redeploy Logic App workflow with ARM safety checks",             tools:"2 local + 6-8 MCP", gradient:"linear-gradient(135deg,#fff7ed 0%,#fed7aa 100%)", accent:"#ea580c" },
+  verifier:   { icon:"check-circle", label:"Verifier",   desc:"Trigger fixed workflow + verify run succeeds for end-to-end confirmation",                tools:"1 local + 3-4 MCP", gradient:"linear-gradient(135deg,#f0fdf4 0%,#bbf7d0 100%)", accent:"#15803d" },
 };
 
 const SPECIALIST_ORDER = ["observer", "classifier", "rca", "fixer", "verifier"];
@@ -126,7 +126,7 @@ export default function Pipeline() {
         <div className={styles.headerRight}>
           <span
             className={`${styles.statusBadge} ${running ? styles.statusBadgeOn : styles.statusBadgeOff} tooltip-below`}
-            data-tip={running ? "Pipeline is actively monitoring SAP CPI for failures" : "Pipeline is stopped — no new incidents will be detected"}
+            data-tip={running ? "Pipeline is actively monitoring Azure Logic Apps for failures" : "Pipeline is stopped — no new incidents will be detected"}
           >
             {running ? "● Running" : "○ Stopped"}
           </span>
@@ -204,7 +204,7 @@ export default function Pipeline() {
           <span className={styles.traceSearchIcon}>🔍</span>
           <input
             className={styles.traceSearchInput}
-            placeholder="search integration flow"
+            placeholder="search workflow name"
             value={traceSearch}
             onChange={(e) => setTraceSearch(e.target.value)}
           />
@@ -214,15 +214,15 @@ export default function Pipeline() {
         {filteredIncidents.length === 0 ? (
           <div className={styles.traceEmpty}>
             {traceSearch.trim()
-              ? "No matching integration flow found."
+              ? "No matching workflow found."
               : "No incidents yet. Start the pipeline to begin processing."}
           </div>
         ) : (
           <table className={styles.table}>
             <thead>
               <tr>
-                <th title="SAP Integration Suite integration flow that encountered the error">iFlow</th>
-                <th title="Classified error category (e.g. MAPPING_ERROR, CONNECTION_ERROR)">Error Type</th>
+                <th title="Azure Logic App workflow that encountered the error">Workflow</th>
+                <th title="Classified error category (e.g. HTTP_ERROR, CONNECTIVITY_ERROR)">Error Type</th>
                 <th title="Current auto-remediation pipeline stage for this incident">Status</th>
                 <th title="AI-generated summary of the root cause">Root Cause</th>
                 <th title="When this incident was first detected by the pipeline">Created</th>

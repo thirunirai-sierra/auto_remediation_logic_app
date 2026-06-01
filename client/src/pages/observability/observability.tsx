@@ -152,7 +152,7 @@ const TERMINAL_STATUSES = new Set([
   "AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "FIX_DEPLOYED",
   "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME",
   "PIPELINE_ERROR", "REJECTED", "TICKET_CREATED", "ARTIFACT_MISSING",
-  "HUMAN_INITIATED_FIX",
+  "HUMAN_INITIATED_FIX", "AWAITING_APPROVAL",
 ]);
 
 const SUCCESS_STATUSES = new Set([
@@ -167,11 +167,11 @@ const SUCCESS_STATUSES = new Set([
 type TabKey = "error" | "ai" | "properties" | "artifact" | "attachments" | "history";
 
 const TABS: { key: TabKey; label: string; tip: string }[] = [
-  { key: "error", label: "Error Details", tip: "Raw error message, error type and processing timestamps from SAP CPI" },
-  { key: "ai", label: "AI Recommendations & Suggested Fix", tip: "AI-generated diagnosis, proposed fix and confidence score from SAP AI Core" },
-  { key: "properties", label: "Properties", tip: "Message properties, adapter configuration and business context" },
-  { key: "artifact", label: "Artifact", tip: "iFlow artifact metadata: version, deployment info and runtime node" },
-  { key: "attachments", label: "Attachments", tip: "Message payload attachments from the CPI processing log" },
+  { key: "error", label: "Error Details", tip: "Raw error message, error type and run timestamps from Azure Monitor / Log Analytics" },
+  { key: "ai", label: "AI Recommendations & Suggested Fix", tip: "AI-generated diagnosis, proposed fix and confidence score" },
+  { key: "properties", label: "Properties", tip: "Run properties, trigger configuration and business context" },
+  { key: "artifact", label: "Workflow", tip: "Logic App workflow metadata: version, deployment info and runtime location" },
+  { key: "attachments", label: "Attachments", tip: "Related knowledge and context for this remediation incident" },
   { key: "history", label: "History", tip: "Timeline of status changes for this remediation incident" },
 ];
 
@@ -191,8 +191,8 @@ const SUMMARY_CARD_KEYS = ["FAILED", "SUCCESS", "PROCESSING", "RETRY"] as const;
 
 const ANALYZE_STEPS = [
   "Analyzing error pattern and stack trace...",
-  "Identifying root cause from iFlow configuration...",
-  "Searching SAP knowledge base for known fixes...",
+  "Identifying root cause from workflow configuration...",
+  "Searching knowledge base for known fixes...",
   "Generating fix recommendation...",
 ];
 
@@ -203,33 +203,30 @@ const ANALYZE_STEPS = [
 type ErrorTypeMeta = { label: string; description: string; action: "AUTO_FIX" | "TICKET_CREATED" | "APPROVAL" | "RETRY"; dot: string };
 
 const ERROR_TYPE_META: Record<string, ErrorTypeMeta> = {
-  MAPPING_ERROR: { label: "Mapping Error", description: "Message mapping structural issue — source/target field mismatch or wrong XSD.", action: "AUTO_FIX", dot: "#22c55e" },
-  DATA_VALIDATION: { label: "Data Validation", description: "Payload fails schema validation — missing required field or wrong data type.", action: "AUTO_FIX", dot: "#22c55e" },
-  AUTH_CONFIG_ERROR: { label: "Auth Config Error", description: "Wrong credential alias or security material reference inside the iFlow.", action: "AUTO_FIX", dot: "#22c55e" },
-  ADAPTER_CONFIG_ERROR: { label: "Adapter Config Error", description: "Receiver adapter misconfigured — endpoint URL or protocol settings wrong (HTTP 4xx).", action: "AUTO_FIX", dot: "#22c55e" },
-  GROOVY_ERROR: { label: "Groovy Error", description: "Groovy script step threw an uncaught exception — logic or null-reference bug.", action: "AUTO_FIX", dot: "#22c55e" },
-  SCRIPT_ERROR: { label: "Script Error", description: "Script step execution failure — syntax error or missing variable.", action: "AUTO_FIX", dot: "#22c55e" },
-  SOAP_ERROR: { label: "SOAP Error", description: "SOAP adapter configuration issue — WSDL mismatch or SOAPAction header wrong.", action: "AUTO_FIX", dot: "#22c55e" },
-  ODATA_ERROR: { label: "OData Error", description: "OData adapter error — entity set path or query options misconfigured.", action: "AUTO_FIX", dot: "#22c55e" },
-  ROUTING_ERROR: { label: "Routing Error", description: "Message routing misconfiguration — router condition does not match any branch.", action: "AUTO_FIX", dot: "#22c55e" },
-  PROPERTY_ERROR: { label: "Property Error", description: "Exchange property referenced in a step does not exist or has the wrong name.", action: "AUTO_FIX", dot: "#22c55e" },
-  SSL_ERROR: { label: "SSL Error", description: "SSL/TLS certificate error — certificate expired, untrusted CA, or wrong trust store.", action: "TICKET_CREATED", dot: "#ef4444" },
-  BACKEND_ERROR: { label: "Backend Error", description: "Backend service returned HTTP 5xx — the target system is down or returning errors.", action: "TICKET_CREATED", dot: "#ef4444" },
-  SFTP_ERROR: { label: "SFTP Error", description: "SFTP server-side issue — check directory path, permissions, and server availability.", action: "TICKET_CREATED", dot: "#ef4444" },
-  DUPLICATE_ERROR: { label: "Duplicate Error", description: "Duplicate record rejected by the target system — idempotency issue requires a source-side fix.", action: "TICKET_CREATED", dot: "#ef4444" },
-  PAYLOAD_SIZE_ERROR: { label: "Payload Size Error", description: "Payload exceeds the size limit — message splitting or infrastructure change required.", action: "TICKET_CREATED", dot: "#ef4444" },
-  IDOC_ERROR: { label: "IDoc Error", description: "IDoc processing failure in SAP ERP — SAP Basis or functional team must investigate.", action: "TICKET_CREATED", dot: "#ef4444" },
-  RESOURCE_ERROR: { label: "Resource Error", description: "Out-of-memory or CPU exhaustion on the integration node — infrastructure team needed.", action: "TICKET_CREATED", dot: "#ef4444" },
-  AUTH_ERROR: { label: "Auth Error", description: "Authentication failed but cause is ambiguous — could be credentials or iFlow config.", action: "APPROVAL", dot: "#f59e0b" },
-  UNKNOWN_ERROR: { label: "Unknown Error", description: "Error could not be classified by the rule engine or LLM — human review required before any fix.", action: "APPROVAL", dot: "#f59e0b" },
-  CONNECTIVITY_ERROR: { label: "Connectivity Error", description: "Transient network issue — connection refused or timed out. Agent retries automatically.", action: "RETRY", dot: "#3b82f6" },
+  EXPRESSION_ERROR: { label: "Expression Error", description: "Workflow expression evaluation failed — syntax error or reference to a missing property in the run context.", action: "AUTO_FIX", dot: "#22c55e" },
+  MAPPING_ERROR: { label: "Mapping Error", description: "Data transformation issue — source/target field mismatch or schema incompatibility in a workflow action.", action: "AUTO_FIX", dot: "#22c55e" },
+  TRIGGER_ERROR: { label: "Trigger Error", description: "Logic App trigger is misconfigured — wrong endpoint, missing required parameter, or invalid schema.", action: "AUTO_FIX", dot: "#22c55e" },
+  CONNECTOR_ERROR: { label: "Connector Error", description: "Managed connector configuration issue — wrong connection reference or invalid action parameters.", action: "AUTO_FIX", dot: "#22c55e" },
+  WORKFLOW_DEFINITION_ERROR: { label: "Workflow Definition Error", description: "Invalid Logic App workflow JSON — missing required field, unsupported action type, or schema violation.", action: "AUTO_FIX", dot: "#22c55e" },
+  AUTH_CONFIG_ERROR: { label: "Auth Config Error", description: "Wrong credential or connection reference inside the workflow — API key, OAuth app registration mismatch.", action: "AUTO_FIX", dot: "#22c55e" },
+  HTTP_ERROR: { label: "HTTP Error", description: "HTTP action received a 4xx client error — bad request, wrong endpoint URL, or missing required header.", action: "AUTO_FIX", dot: "#22c55e" },
+  ODATA_ERROR: { label: "OData Error", description: "OData connector action failed — entity set path or query options misconfigured.", action: "AUTO_FIX", dot: "#22c55e" },
+  BACKEND_ERROR: { label: "Backend Error", description: "Target service returned HTTP 5xx — the downstream system is down or returning server errors.", action: "TICKET_CREATED", dot: "#ef4444" },
+  THROTTLING_ERROR: { label: "Throttling Error", description: "Azure or connector rate limit hit — too many requests in a short window. Infrastructure or retry policy change required.", action: "TICKET_CREATED", dot: "#ef4444" },
+  RESOURCE_LIMIT_ERROR: { label: "Resource Limit Error", description: "Logic App run exceeded execution limits (duration, actions, or memory) — workflow redesign required.", action: "TICKET_CREATED", dot: "#ef4444" },
+  SSL_ERROR: { label: "SSL Error", description: "TLS/SSL certificate error on an HTTP action — certificate expired, untrusted CA, or wrong trust anchor.", action: "TICKET_CREATED", dot: "#ef4444" },
+  DEPENDENCY_ERROR: { label: "Dependency Error", description: "A required Azure resource (Key Vault, Service Bus, Storage) is unavailable or misconfigured.", action: "TICKET_CREATED", dot: "#ef4444" },
+  AUTH_ERROR: { label: "Auth Error", description: "Authentication failed — OAuth token expired, API key revoked, or managed identity permission missing.", action: "APPROVAL", dot: "#f59e0b" },
+  UNKNOWN_ERROR: { label: "Unknown Error", description: "Error could not be classified by the rule engine or AI — human review required before any fix.", action: "APPROVAL", dot: "#f59e0b" },
+  CONNECTIVITY_ERROR: { label: "Connectivity Error", description: "Transient network issue — connection refused or timed out. Agent retries the workflow run automatically.", action: "RETRY", dot: "#3b82f6" },
+  TIMEOUT_ERROR: { label: "Timeout Error", description: "Workflow action exceeded its timeout limit — transient target slowness; agent retries with backoff.", action: "RETRY", dot: "#3b82f6" },
 };
 
 const ACTION_GROUPS: { key: ErrorTypeMeta["action"]; iconName: "lightning" | "tickets" | "user" | "loop"; label: string; desc: string; color: string; bg: string }[] = [
   { key: "AUTO_FIX", iconName: "lightning", label: "Auto-Fix", desc: "Agent resolves automatically — no manual action needed", color: "#15803d", bg: "#f0fdf4" },
   { key: "TICKET_CREATED", iconName: "tickets", label: "Ticket Created", desc: "Escalated to a human team — a ticket has been created", color: "#b91c1c", bg: "#fff5f5" },
   { key: "APPROVAL", iconName: "user", label: "Awaiting Approval", desc: "Agent needs human sign-off before applying any fix", color: "#92400e", bg: "#fffbeb" },
-  { key: "RETRY", iconName: "loop", label: "Retry", desc: "Transient issue — agent retries the iFlow automatically", color: "#1e40af", bg: "#eff6ff" },
+  { key: "RETRY", iconName: "loop", label: "Retry", desc: "Transient issue — agent retries the workflow run automatically", color: "#1e40af", bg: "#eff6ff" },
 ];
 
 function ErrorTypeGuideTab() {
@@ -343,7 +340,7 @@ function FixPlanSteps({ steps }: { steps: IFixPlanStep[] }) {
   );
 }
 
-const FIX_STAGES = ["Submit", "Get iFlow", "Validate", "Patch", "Deploy"] as const;
+const FIX_STAGES = ["Submit", "Get Workflow", "Validate", "Patch", "Deploy"] as const;
 
 function PipelineStageRail({ stepIndex, totalSteps, currentStep }: { stepIndex: number; totalSteps: number; currentStep?: string }) {
   const slots = FIX_STAGES.length;
@@ -530,6 +527,7 @@ export default function Observability() {
   const [errorExplainErr, setErrorExplainErr] = useState<string | null>(null);
   const [fixPatch, setFixPatch] = useState<IFixPatchResponse | null>(null);
   const [fixPatchLoading, setFixPatchLoading] = useState(false);
+  const [fixPatchError, setFixPatchError] = useState<string | null>(null);
   const [fixState, setFixState] = useState<"idle" | "loading" | "success" | "error" | "skipped" | "deployed_unverified">("idle");
   const [fixResult, setFixResult] = useState<string>("");
   const [fixProgress, setFixProgress] = useState<{
@@ -703,6 +701,7 @@ export default function Observability() {
     setSelectedMsg(msg);
     setDetail(null);
     setFixPatch(null);
+    setFixPatchError(null);
     setFixState("idle");
     setFixResult("");
     setFixProgress(null);
@@ -724,10 +723,10 @@ export default function Observability() {
       const incStatus = normalizeStatusKey(d.incident_status);
       if (incStatus === "HUMAN_INITIATED_FIX") {
         setFixState("skipped");
-        setFixResult(d.ai_recommendation?.fix_summary || "iFlow was already running — no changes were applied.");
+        setFixResult(d.ai_recommendation?.fix_summary || "Workflow was already running — no changes were applied.");
       } else if (incStatus === "FIX_DEPLOYED") {
         setFixState("deployed_unverified");
-        setFixResult(d.ai_recommendation?.fix_summary || "Fix deployed but XML validation had warnings — verify the iFlow manually.");
+        setFixResult(d.ai_recommendation?.fix_summary || "Fix deployed but XML validation had warnings — verify the workflow manually.");
       } else if (["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED"].includes(incStatus)) {
         setFixState("success");
         setFixResult(d.ai_recommendation?.fix_summary || "Fix applied and deployed successfully.");
@@ -781,11 +780,12 @@ export default function Observability() {
   const handleGenerateFixPatch = useCallback(async () => {
     if (!selectedGuid) return;
     setFixPatchLoading(true);
+    setFixPatchError(null);
     try {
       const patch = await generateFixPatch(selectedGuid) as IFixPatchResponse;
       setFixPatch(patch);
-    } catch {
-      // handled
+    } catch (e) {
+      setFixPatchError(e instanceof Error ? e.message : "Fix generation failed — check backend logs.");
     } finally {
       setFixPatchLoading(false);
     }
@@ -815,12 +815,21 @@ export default function Observability() {
         if (TERMINAL_STATUSES.has(st) || stepImpliesDone) {
           resolved = true;
           setFixProgress(null);
-          if (st === "HUMAN_INITIATED_FIX") {
+          if (st === "AWAITING_APPROVAL") {
+            setFixState("idle");
+            setFixResult((s.fix_summary as string) || "Queued for approval — go to Approvals tab to review.");
+          } else if (st === "TICKET_CREATED") {
+            setFixState("idle");
+            setFixResult((s.fix_summary as string) || "Escalated — a ticket has been created for manual review.");
+          } else if (st === "RETRIED") {
+            setFixState("success");
+            setFixResult((s.fix_summary as string) || "Retry triggered successfully.");
+          } else if (st === "HUMAN_INITIATED_FIX") {
             setFixState("skipped");
-            setFixResult((s.fix_summary as string) || "iFlow was already running — no changes were applied.");
+            setFixResult((s.fix_summary as string) || "Workflow was already running — no changes were applied.");
           } else if (st === "FIX_DEPLOYED") {
             setFixState("deployed_unverified");
-            setFixResult((s.fix_summary as string) || "Fix deployed but XML validation had warnings — verify the iFlow manually.");
+            setFixResult((s.fix_summary as string) || "Fix deployed but XML validation had warnings — verify the workflow manually.");
           } else if (SUCCESS_STATUSES.has(st) || stepImpliesDone) {
             setFixState("success");
             setFixResult((s.fix_summary as string) || "Fix applied and deployed successfully.");
@@ -859,11 +868,11 @@ export default function Observability() {
       if (syncStatus === "HUMAN_INITIATED_FIX") {
         setFixProgress(null);
         setFixState("skipped");
-        setFixResult((result.summary as string) || "iFlow was already running — no changes were applied.");
+        setFixResult((result.summary as string) || "Workflow was already running — no changes were applied.");
       } else if (syncStatus === "FIX_DEPLOYED") {
         setFixProgress(null);
         setFixState("deployed_unverified");
-        setFixResult((result.summary as string) || "Fix deployed but XML validation had warnings — verify the iFlow manually.");
+        setFixResult((result.summary as string) || "Fix deployed but XML validation had warnings — verify the workflow manually.");
       } else if (SUCCESS_STATUSES.has(syncStatus) || (syncFixApplied && syncDeploy)) {
         setFixProgress(null);
         setFixState("success");
@@ -872,6 +881,18 @@ export default function Observability() {
         setFixProgress(null);
         setFixState("error");
         setFixResult((result.summary as string) || "Fix failed.");
+      } else if (syncStatus === "AWAITING_APPROVAL") {
+        setFixProgress(null);
+        setFixState("idle");
+        setFixResult((result.summary as string) || "Queued for approval — no automated fix applied yet. Go to Approvals to review.");
+      } else if (syncStatus === "TICKET_CREATED") {
+        setFixProgress(null);
+        setFixState("idle");
+        setFixResult((result.summary as string) || "Escalated — a ticket has been created for manual review.");
+      } else if (syncStatus === "RETRIED") {
+        setFixProgress(null);
+        setFixState("success");
+        setFixResult((result.summary as string) || "Retry triggered successfully.");
       } else if (incidentId) {
         await startFixPolling(incidentId);
       } else {
@@ -1016,13 +1037,13 @@ export default function Observability() {
             {/* Message list */}
             <div className={`${styles.listCol} ${selectedGuid ? styles.listColNarrow : ""}`}>
               <div className={styles.listColHeader}>
-                <span className={styles.listColTitle}>List Heading</span>
+                <span className={styles.listColTitle}>Logic App Runs</span>
                 <div className={styles.listColControls}>
                   <div className={styles.listColSearch}>
                     <span className={styles.listColSearchIcon}>🔍</span>
                     <input
                       className={styles.listColSearchInput}
-                      placeholder="search message ID / iflow name"
+                      placeholder="search run ID / workflow name"
                       value={filters.idQuery}
                       onChange={(e) => setFilters((f) => ({ ...f, idQuery: e.target.value }))}
                     />
@@ -1182,7 +1203,7 @@ export default function Observability() {
                         <div className={styles.aiThinkingLoader}>
                           <div className={styles.aiThinkingHeader}>
                             <div className={styles.aiThinkingAvatar}>AI</div>
-                            <span className={styles.aiThinkingTitle}>SAP AI Core</span>
+                            <span className={styles.aiThinkingTitle}>Azure AI</span>
                             <div className={styles.aiThinkingDots}><span /><span /><span /></div>
                           </div>
                           <div key={analyzeStep} className={styles.aiThinkingStep}>{ANALYZE_STEPS[analyzeStep]}</div>
@@ -1273,14 +1294,14 @@ export default function Observability() {
                     <div className={styles.tabContent}>
                       <div className={styles.propGrid}>
                         {[
-                          ["Name", detail.artifact.name],
-                          ["Artifact ID", detail.artifact.artifact_id],
+                          ["Workflow Name", detail.artifact.name],
+                          ["Workflow ID", detail.artifact.artifact_id],
                           ["Version", detail.artifact.version],
-                          ["Package", detail.artifact.package],
-                          ["Deployed On", detail.artifact.deployed_on],
-                          ["Deployed By", detail.artifact.deployed_by],
-                          ["Runtime Node", detail.artifact.runtime_node],
-                          ["Status", detail.artifact.status],
+                          ["Resource Group", detail.artifact.package],
+                          ["Created On", detail.artifact.deployed_on],
+                          ["Created By", detail.artifact.deployed_by],
+                          ["Region", detail.artifact.runtime_node],
+                          ["Provisioning State", detail.artifact.status],
                         ].map(([label, val]) => val ? (
                           <div key={label} className={styles.propRow}>
                             <span className={styles.propLabel}>{label}</span>
@@ -1346,16 +1367,23 @@ export default function Observability() {
                             <button className={styles.forceApplyBtn} onClick={handleApplyFix}>Force Apply Fix</button>
                           </>
                         )}
-                        {fixState === "deployed_unverified" && <span className={styles.deployedUnverifiedBadge}>⚠ Deployed — Verify iFlow Manually</span>}
+                        {fixState === "deployed_unverified" && <span className={styles.deployedUnverifiedBadge}>⚠ Deployed — Verify Workflow Manually</span>}
                         {fixState === "error" && detail?.incident_id && (
                           <button className={styles.checkStatusBtn} onClick={handleCheckStatus}>Check Status</button>
                         )}
                       </>
                     ) : (
                       detail.ai_recommendation.can_generate_fix && (
-                        <button className={styles.generateFixBtn} onClick={handleGenerateFixPatch} disabled={fixPatchLoading}>
-                          {fixPatchLoading ? <><span className={styles.btnSpinner} /> Generating...</> : <><SvgIcon name="wrench" size={14} style={{ verticalAlign: "middle", marginRight: "0.3rem" }} />Generate Fix Patch</>}
-                        </button>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem", alignItems: "flex-start" }}>
+                          <button className={styles.generateFixBtn} onClick={handleGenerateFixPatch} disabled={fixPatchLoading}>
+                            {fixPatchLoading ? <><span className={styles.btnSpinner} /> Generating...</> : <><SvgIcon name="wrench" size={14} style={{ verticalAlign: "middle", marginRight: "0.3rem" }} />Generate Fix Patch</>}
+                          </button>
+                          {fixPatchError && (
+                            <div style={{ fontSize: "0.78rem", color: "#dc2626", maxWidth: 340, lineHeight: 1.4 }}>
+                              ✕ {fixPatchError}
+                            </div>
+                          )}
+                        </div>
                       )
                     )}
                     {fixPatch && fixState === "idle" && (
@@ -1417,7 +1445,7 @@ export default function Observability() {
                   </div>
                   <div className={styles.ticketBody}>
                     <div className={styles.ticketMeta}>
-                      <span><strong>iFlow:</strong> {ticket.iflow_id}</span>
+                      <span><strong>Workflow:</strong> {ticket.iflow_id}</span>
                       <span><strong>Error Type:</strong> {ticket.error_type}</span>
                       {ticket.assigned_to && <span><strong>Assigned To:</strong> {ticket.assigned_to}</span>}
                     </div>
@@ -1472,7 +1500,7 @@ export default function Observability() {
       {mainTab === "approvals" && (
         <div className={styles.approvalsContainer}>
           <div className={styles.approvalsHeader}>
-            <div><h2>Pending Approvals</h2><p className={styles.tabDescription}>AI-proposed fixes awaiting human sign-off before being deployed to SAP CPI. Review and approve or reject each one below.</p></div>
+            <div><h2>Pending Approvals</h2><p className={styles.tabDescription}>AI-proposed fixes awaiting human sign-off before being applied to Azure Logic Apps. Review and approve or reject each one below.</p></div>
             <div className={styles.approvalsHeaderActions}>
               <button className={`${styles.btn} ${styles.btnApprove}`} onClick={handleApproveAll} disabled={!!bulkActionLoading || approvalsLoading || approvals.filter(a => a.status === "AWAITING_APPROVAL").length === 0}>
                 {bulkActionLoading === "approving" ? "Approving..." : "✓ Approve All"}
