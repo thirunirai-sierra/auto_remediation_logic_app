@@ -1,1 +1,1 @@
-# auto_remidiation_logic_app
+# auto_remediation_logic_app
