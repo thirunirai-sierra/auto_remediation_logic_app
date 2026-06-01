@@ -22,8 +22,8 @@ class Settings(BaseSettings):
 
     # Azure API versions
     AZURE_API_RUNS_VERSION: str = "2019-05-01"
-    AZURE_API_WORKFLOW_VERSION: str = "2019-05-01"
-    AZURE_API_TRIGGER_RUN_VERSION: str = "2016-06-01"
+    AZURE_API_WORKFLOW_VERSION: str = "2023-01-15-preview"
+    AZURE_API_TRIGGER_RUN_VERSION: str = "2019-05-01"
 
     # Remediation settings
     MAX_REMEDIATION_ATTEMPTS: int = 2

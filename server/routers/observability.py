@@ -373,13 +373,13 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
 
     cursor = client.conn.cursor()
     cursor.execute(
-        f"SELECT WORKFLOW_NAME, SUBSCRIPTION_ID, ERROR_CATEGORY, ERROR_MESSAGE FROM {client.full_table} WHERE INCIDENT_ID = ?",
+        f"SELECT WORKFLOW_NAME, SUBSCRIPTION_ID, ERROR_CATEGORY, ERROR_MESSAGE, RESOURCE_GROUP FROM {client.full_table} WHERE INCIDENT_ID = ?",
         (incident_id,)
     )
     row = cursor.fetchone()
     if not row:
         raise HTTPException(404, "Incident not found")
-    workflow_name, sub_id, error_category, _error_msg = row
+    workflow_name, sub_id, error_category, _error_msg, resource_group_db = row
     cursor.close()
 
     # Check remediation policy for this error type.
@@ -418,6 +418,7 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     # use internal IDs (ORBLOGICAPPS-*), not Azure run IDs.
     # The AI diagnosis + fix plan are already stored from the Analyze/GenerateFixPatch steps.
     effective_sub_id = sub_id or settings.AZURE_SUBSCRIPTION_ID
+    effective_rg = resource_group_db or settings.AZURE_RESOURCE_GROUP
 
     # Guard: Azure ARM credentials required
     if not (settings.AZURE_TENANT_ID and settings.AZURE_CLIENT_ID
@@ -478,7 +479,7 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
         "workflow_name": workflow_name,
         "run_id": incident_id,
         "subscription_id": effective_sub_id,
-        "resource_group": settings.AZURE_RESOURCE_GROUP,
+        "resource_group": effective_rg,
         "failed_action_name": failed_action_name,
         "backup_dir": None,
         "error_type": error_category,
@@ -699,12 +700,32 @@ async def approve_incident(_incident_id: str, _req: ApproveIncidentRequest):
 
 @router.get("/aem/status")
 async def aem_status():
-    return {"event_mesh_enabled": True, "messages_retrieved": 0, "total_incidents": 0, "queue_depth": 0}
+    from routers.event_mesh import event_mesh_status
+    return await event_mesh_status()
 
 
 @router.get("/aem/incidents")
 async def aem_incidents(limit: int = 100):
-    return {"incidents": []}
+    client = get_hana_client()
+    if not client or not client._ensure_connected():
+        return {"incidents": []}
+    try:
+        cursor = client.conn.cursor()
+        cursor.execute(
+            f"""SELECT INCIDENT_ID, SUBSCRIPTION_ID, WORKFLOW_NAME, ERROR_CODE,
+                       ERROR_MESSAGE, CREATED_AT, STATUS, ERROR_CATEGORY
+                FROM {client.full_table}
+                ORDER BY CREATED_AT DESC
+                LIMIT ?""",
+            (limit,)
+        )
+        rows = cursor.fetchall()
+        cols = [d[0].lower() for d in cursor.description]
+        cursor.close()
+        return {"incidents": [dict(zip(cols, row)) for row in rows]}
+    except Exception as exc:
+        logger.warning("aem_incidents query failed: %s", exc)
+        return {"incidents": []}
 
 
 @router.get("/mcp/tools")

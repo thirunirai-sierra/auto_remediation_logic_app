@@ -17,6 +17,7 @@ from services.workflow_service import get_workflow
 from services.auth import get_arm_token
 from db.hana_client import get_global_client
 from routers import agents
+from routers import event_mesh as event_mesh_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger(__name__)
@@ -208,6 +209,7 @@ app.include_router(workflow.router, prefix="/workflows", tags=["workflows"])
 app.include_router(dashboard.router)
 app.include_router(agents.router)
 app.include_router(settings_router.router)
+app.include_router(event_mesh_router.router)
 
 @app.get("/api/monitor/status")
 async def api_monitor_status():

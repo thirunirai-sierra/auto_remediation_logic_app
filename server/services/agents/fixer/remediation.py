@@ -198,6 +198,10 @@ def strip_read_only_for_put(workflow_get_response: Dict[str, Any]) -> Dict[str, 
     if identity:
         body["identity"] = identity
 
+    # Strip read-only top-level fields that cause 400 on Standard tier
+    for ro_field in ("id", "name", "type", "etag", "systemData"):
+        body.pop(ro_field, None)
+
     return body
 
 def _contains_needs_null_guard(expr: str) -> bool:
