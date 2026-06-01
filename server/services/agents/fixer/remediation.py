@@ -157,23 +157,47 @@ def apply_remediation_patch(
 
 def strip_read_only_for_put(workflow_get_response: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Remove read-only properties from a workflow response before a PUT operation.
-
-    Args:
-        workflow_get_response (Dict[str, Any]): The workflow GET response dictionary.
-
-    Returns:
-        Dict[str, Any]: Copy of the workflow dictionary with read-only fields removed.
+    Build a clean PUT body from a GET response — only includes properties ARM accepts.
+    Azure rejects PUT bodies that include read-only fields like provisioningState.
     """
-    body = copy.deepcopy(workflow_get_response)
-    props = body.get("properties")
-    if isinstance(props, dict):
-        for ro in (
-            "createdTime", "changedTime", "state", "version",
-            "accessEndpoint", "endpointsConfiguration",
-            "integrationAccount", "integrationServiceEnvironment",
-        ):
-            props.pop(ro, None)
+    src_props = workflow_get_response.get("properties", {})
+
+    put_props: Dict[str, Any] = {
+        "definition": src_props.get("definition", {}),
+    }
+    # Include parameters only if present and non-empty
+    params = src_props.get("parameters")
+    if params:
+        put_props["parameters"] = params
+
+    # Keep state (Enabled/Disabled) if explicitly set
+    state = src_props.get("state")
+    if state in ("Enabled", "Disabled"):
+        put_props["state"] = state
+
+    # Keep integration service environment reference if present
+    ise = src_props.get("integrationServiceEnvironment")
+    if ise:
+        put_props["integrationServiceEnvironment"] = ise
+
+    # Keep integration account reference if present
+    ia = src_props.get("integrationAccount")
+    if ia:
+        put_props["integrationAccount"] = ia
+
+    body: Dict[str, Any] = {
+        "location": workflow_get_response.get("location", ""),
+        "properties": put_props,
+    }
+    # Include tags if present
+    tags = workflow_get_response.get("tags")
+    if tags:
+        body["tags"] = tags
+    # Include identity if present (managed identity)
+    identity = workflow_get_response.get("identity")
+    if identity:
+        body["identity"] = identity
+
     return body
 
 def _contains_needs_null_guard(expr: str) -> bool:

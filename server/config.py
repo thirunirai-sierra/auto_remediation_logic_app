@@ -52,18 +52,15 @@ class Settings(BaseSettings):
     VECTOR_DIMENSION: int = 3072
 
     # Multi‑flow settings
-    LOOKBACK_HOURS: int = 24
+    LOOKBACK_HOURS: float = 24.0
     MAX_CONCURRENCY: int = 6
 
     VERIFY_FIX_WITH_TEST_RUN: bool = False
-    # Add these inside Settings class
-    FALLBACK_HTTP_URL: str = "https://httpbin.org/status/200"
-    HTTP_TIMEOUT_ISO: str = "PT2M"
     DRY_RUN: bool = False
     TRACKER_RETENTION_DAYS: int = 90
     TRACKER_MAX_RETRY_COUNT: int = 2
-    
-        # Knowledge scraper settings
+
+    # Knowledge scraper settings
     KNOWLEDGE_CHUNK_SIZE: int = 1200
     KNOWLEDGE_CHUNK_OVERLAP: int = 50
     KNOWLEDGE_SCRAPE_BATCH_SIZE: int = 3

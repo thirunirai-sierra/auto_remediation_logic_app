@@ -52,7 +52,7 @@ export default function OverviewTab(props: {  dashLoading: boolean;
   kpi: Record<string, unknown>;
   statusData: { status: string; count: number }[];
   errorData: { error_type: string; count: number }[];
-  iflowData: { iflow_name: string; failure_count: number }[];
+  iflowData: { workflow_name: string; failure_count: number }[];
   timelineData: { time: string; count: number }[];
   failuresLoading: boolean;
   failuresFetching: boolean;
@@ -98,7 +98,7 @@ export default function OverviewTab(props: {  dashLoading: boolean;
             <KpiCard header="Total Incidents" value={kpi.total_incidents} tooltip="All incidents tracked by the auto-remediation pipeline, including resolved and active" icon="⚠" />
             <KpiCard header="Pending Approval" value={kpi.pending_approval} tooltip="Fixes generated but awaiting manual approval before deployment to production" icon="📋" />
             <SplitKpiCard fixFailed={kpi.fix_failed} autoFixed={kpi.auto_fixed} tooltip="Fix Failed vs Auto Fixed counts" />
-            <KpiCard header="Failed Messages" subheader="Live" value={kpi.total_failed_messages} tooltip="SAP CPI messages currently in FAILED state, polled live from the message processing log" icon="✉" />
+            <KpiCard header="Failed Messages" subheader="Live" value={kpi.total_failed_messages} tooltip="Azure Logic Apps runs currently in FAILED state, polled live from Log Analytics" icon="✉" />
             <KpiCard header="Auto Fix Rate" value={kpi.auto_fix_rate} unit="%" tooltip="Percentage of incidents resolved automatically vs all closed incidents" icon="⚙" />
             <KpiCard header="Avg Resolution Time" subheader="Min" value={kpi.avg_resolution_time_minutes} unit="Min" tooltip="Mean time from incident detection to terminal state (auto-fixed or failed)" icon="⏱" />
             <KpiCard header="RCA Coverage" value={kpi.rca_coverage_percent} tooltip="Percentage of incidents that received AI-powered root cause analysis" icon="📊" />
@@ -118,8 +118,8 @@ export default function OverviewTab(props: {  dashLoading: boolean;
       </div>
 
       <div className={styles.chartBlock}>
-        <SectionTitle title="Top Failing Integration Artifact" />
-        {dashLoading ? <SkeletonChart /> : <ResponsiveContainer width="100%" height={320}><BarChart data={iflowData} layout="vertical" margin={{ left: 10, right: 30, top: 5, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" horizontal={false} /><XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} /><YAxis type="category" dataKey="iflow_name" width={190} tick={{ fontSize: 11 }} tickFormatter={(v: string) => v.length > 25 ? `${v.slice(0, 23)}…` : v} /><Tooltip /><Bar dataKey="failure_count" name="Failures" fill="#1e6bb8" radius={[0, 3, 3, 0]} /></BarChart></ResponsiveContainer>}
+        <SectionTitle title="Top Failing Workflows" />
+        {dashLoading ? <SkeletonChart /> : <ResponsiveContainer width="100%" height={320}><BarChart data={iflowData} layout="vertical" margin={{ left: 10, right: 30, top: 5, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" horizontal={false} /><XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} /><YAxis type="category" dataKey="workflow_name" width={190} tick={{ fontSize: 11 }} tickFormatter={(v: string) => v.length > 25 ? `${v.slice(0, 23)}…` : v} /><Tooltip /><Bar dataKey="failure_count" name="Failures" fill="#1e6bb8" radius={[0, 3, 3, 0]} /></BarChart></ResponsiveContainer>}
       </div>
 
       <div className={styles.chartBlock}>
@@ -131,7 +131,7 @@ export default function OverviewTab(props: {  dashLoading: boolean;
         <div className={styles.tableBlockHeader}><span className={styles.tableBlockTitle}>Recent Failed Messages ({failuresTotalCount})</span></div>
         <div className={styles.tableWrapper} style={failuresFetching && !failuresLoading ? { opacity: 0.6, pointerEvents: "none" } : undefined}>
           <table className={styles.table}>
-            <thead><tr><th>Message GUID</th><th>Integration Scenario</th><th>Status</th><th>Time</th><th>Time Preview</th></tr></thead>
+            <thead><tr><th>Run ID</th><th>Workflow Name</th><th>Status</th><th>Time</th><th>Time Preview</th></tr></thead>
             <tbody>
               {failuresLoading ? <SkeletonRows count={5} colSpan={5} /> : recentFails.length === 0 ? <tr><td colSpan={5} className={styles.emptyCell}>No data</td></tr> : recentFails.map((row, i) => <tr key={i}><td className={styles.mono}>{String(row.message_guid ?? "-")}</td><td>{String(row.iflow_name ?? "-")}</td><td><StatusBadge status={String(row.status ?? "")} /></td><td>{formatISODate(row.log_end as string)}</td><td className={styles.mono} style={{ color: "#94a3b8" }}>-</td></tr>)}
             </tbody>
@@ -145,7 +145,7 @@ export default function OverviewTab(props: {  dashLoading: boolean;
         {incidentsError && <div style={{ color: "#dc2626", fontSize: "0.85rem", marginBottom: "0.6rem" }}>Failed to load incidents API: {incidentsErrorMessage}</div>}
         <div className={styles.tableWrapper} style={incidentsFetching && !incidentsLoading ? { opacity: 0.6, pointerEvents: "none" } : undefined}>
           <table className={styles.table}>
-            <thead><tr><th>Incident ID</th><th>Message GUID</th><th>iFlow</th><th>Error Type</th><th>Status</th><th>Created At</th><th>Last Seen</th><th>Occurrences</th><th>RCA Confidence</th></tr></thead>
+            <thead><tr><th>Incident ID</th><th>Run ID</th><th>Workflow</th><th>Error Type</th><th>Status</th><th>Created At</th><th>Last Seen</th><th>Occurrences</th><th>RCA Confidence</th></tr></thead>
             <tbody>
               {incidentsLoading ? <SkeletonRows count={5} /> : activeInc.length === 0 ? <tr><td colSpan={9} className={styles.emptyCell}>No data</td></tr> : activeInc.map((row, i) => {
                 const stateClass = INCIDENT_STATE[String(row.status ?? "")] ?? styles.stateNone;

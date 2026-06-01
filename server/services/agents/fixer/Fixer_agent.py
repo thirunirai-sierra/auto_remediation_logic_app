@@ -432,10 +432,20 @@ class FixerAgent:
         try:
             fixed_workflow = copy.deepcopy(workflow)
             definition = fixed_workflow.get("properties", {}).get("definition", {})
-            try:
-                _, action_node = locate_action_node(definition, failed_action_name)
-            except Exception:
-                logger.error(f"[FIXER] Action {failed_action_name} not found")
+            action_node = None
+            if failed_action_name:
+                try:
+                    _, action_node = locate_action_node(definition, failed_action_name)
+                except Exception:
+                    logger.warning("[FIXER] Action '%s' not found — using fallback patch", failed_action_name)
+
+            # If specific action not found (or name unknown), use fallback that patches all eligible actions
+            if action_node is None:
+                logger.info("[FIXER] No specific action target — applying fallback patch")
+                fallback = self._apply_fallback_patch(fixed_workflow, definition, fix_strategy)
+                if fallback:
+                    return fallback
+                logger.error("[FIXER] Fallback patch also failed — no applicable changes")
                 return None
 
             changes = fix_strategy.get("changes", {})

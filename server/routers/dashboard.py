@@ -64,7 +64,7 @@ async def logs_overview(top: int = Query(1000, ge=1, le=5000)):
 
         # Top iFlows
         cursor.execute(f"SELECT WORKFLOW_NAME, COUNT(*) FROM {table} GROUP BY WORKFLOW_NAME ORDER BY COUNT(*) DESC LIMIT 10")
-        top_iflows = [{"iflow_name": row[0], "failure_count": row[1]} for row in cursor.fetchall()]
+        top_iflows = [{"workflow_name": row[0], "failure_count": row[1]} for row in cursor.fetchall()]
 
         # Timeline - FIXED: Use CAST(... AS DATE) instead of DATE() for HANA
         # Also ensure all non-aggregate columns are in GROUP BY

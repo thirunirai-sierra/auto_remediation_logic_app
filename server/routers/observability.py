@@ -140,7 +140,7 @@ async def get_monitor_message_detail(incident_id: str):
     properties = json.loads(rec.get("PROPERTIES_JSON") or "{}")
     artifact = json.loads(rec.get("ARTIFACT_JSON") or "{}")
 
-    can_generate_fix = rec.get("AUTO_FIX_ATTEMPTED") is not None and not rec.get("AUTO_FIX_SUCCESS")
+    can_generate_fix = bool(ai_diag)  # show Generate Fix button whenever AI diagnosis exists
 
     # --- Knowledge base search for related knowledge ---
     related_knowledge = []
@@ -308,12 +308,20 @@ async def generate_fix_patch(incident_id: str):
     workflow_name, sub_id, error_msg, error_category = row
     cursor.close()
 
-    # Fetch current workflow definition
-    token = get_arm_token(settings.AZURE_TENANT_ID, settings.AZURE_CLIENT_ID, settings.AZURE_CLIENT_SECRET)
-    workflow = await asyncio.to_thread(
-        get_workflow, token, sub_id, settings.AZURE_RESOURCE_GROUP, workflow_name
-    )
-    definition = workflow.get("properties", {}).get("definition", {})
+    # Use subscription_id from record, fall back to settings
+    effective_sub_id = sub_id or settings.AZURE_SUBSCRIPTION_ID
+
+    # Fetch workflow definition — optional; proceed without it if ARM is unavailable
+    definition = {}
+    try:
+        if effective_sub_id and settings.AZURE_TENANT_ID and settings.AZURE_CLIENT_ID:
+            token = get_arm_token(settings.AZURE_TENANT_ID, settings.AZURE_CLIENT_ID, settings.AZURE_CLIENT_SECRET)
+            workflow = await asyncio.to_thread(
+                get_workflow, token, effective_sub_id, settings.AZURE_RESOURCE_GROUP, workflow_name
+            )
+            definition = workflow.get("properties", {}).get("definition", {})
+    except Exception as e:
+        logger.warning("Could not fetch workflow definition for fix generation (continuing without it): %s", e)
 
     llm = AICoreLLMClient.from_env()
     system_prompt = (
@@ -371,30 +379,157 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     row = cursor.fetchone()
     if not row:
         raise HTTPException(404, "Incident not found")
-    workflow_name, sub_id, _error_category, _error_msg = row
+    workflow_name, sub_id, error_category, _error_msg = row
     cursor.close()
 
-    # Use orchestrator to remediate
-    orch = Orchestrator(settings)
-    result = await orch.remediate(
-        workflow_name=workflow_name,
-        run_id=incident_id,
-        subscription_id=sub_id,
-        resource_group=settings.AZURE_RESOURCE_GROUP,
-        backup_dir=None,
-    )
+    # Check remediation policy for this error type.
+    # When the user explicitly clicks Apply Fix (force=True), bypass the policy —
+    # the click itself is the human approval.
+    from routers.settings import get_error_policy
+    policy = get_error_policy(error_category or "UNKNOWN_ERROR")
+    logger.info("apply-fix: incident=%s error=%s policy=%s force=%s", incident_id, error_category, policy, req.force)
 
-    success = result.get("status") == "remediated"
+    if not req.force:
+        if policy == "AWAITING_APPROVAL":
+            cursor = client.conn.cursor()
+            cursor.execute(f"UPDATE {client.full_table} SET STATUS = 'AWAITING_APPROVAL' WHERE INCIDENT_ID = ?", (incident_id,))
+            client.conn.commit()
+            cursor.close()
+            return {"status": "AWAITING_APPROVAL", "summary": f"Policy for {error_category} requires human approval. Click Apply Fix to override and deploy."}
+
+        if policy == "RETRY":
+            cursor = client.conn.cursor()
+            cursor.execute(f"UPDATE {client.full_table} SET STATUS = 'RETRIED', AUTO_FIX_ATTEMPTED = TRUE, AUTO_FIX_SUCCESS = TRUE WHERE INCIDENT_ID = ?", (incident_id,))
+            client.conn.commit()
+            cursor.close()
+            return {"status": "RETRIED", "summary": f"Policy for {error_category} triggers automatic retry."}
+
+        if policy == "TICKET_CREATED":
+            cursor = client.conn.cursor()
+            cursor.execute(f"UPDATE {client.full_table} SET STATUS = 'TICKET_CREATED', AUTO_FIX_ATTEMPTED = TRUE, AUTO_FIX_SUCCESS = FALSE WHERE INCIDENT_ID = ?", (incident_id,))
+            client.conn.commit()
+            cursor.close()
+            return {"status": "TICKET_CREATED", "summary": f"Policy for {error_category} escalates to a ticket for manual review."}
+    else:
+        logger.info("apply-fix: force=True — bypassing policy %s, applying fix directly", policy)
+
+    # policy == "AUTO_FIX" — apply fix directly using data already in HANA
+    # We bypass the Observer (which needs an Azure run_id) because Event Mesh incidents
+    # use internal IDs (ORBLOGICAPPS-*), not Azure run IDs.
+    # The AI diagnosis + fix plan are already stored from the Analyze/GenerateFixPatch steps.
+    effective_sub_id = sub_id or settings.AZURE_SUBSCRIPTION_ID
+
+    # Guard: Azure ARM credentials required
+    if not (settings.AZURE_TENANT_ID and settings.AZURE_CLIENT_ID
+            and settings.AZURE_CLIENT_SECRET and effective_sub_id):
+        logger.info("apply-fix: ARM credentials not configured — queuing for manual approval")
+        cursor = client.conn.cursor()
+        cursor.execute(
+            f"UPDATE {client.full_table} SET STATUS = 'AWAITING_APPROVAL', AUTO_FIX_ATTEMPTED = TRUE WHERE INCIDENT_ID = ?",
+            (incident_id,)
+        )
+        client.conn.commit()
+        cursor.close()
+        return {
+            "status": "AWAITING_APPROVAL",
+            "summary": "Azure ARM credentials not configured. Review the AI fix plan and apply manually.",
+        }
+
+    # Read all AI data from HANA for direct fixer call
+    cursor = client.conn.cursor()
+    cursor.execute(
+        f"""SELECT AI_DIAGNOSIS, AI_PROPOSED_FIX, AI_CONFIDENCE, AI_FIX_PATCH,
+                   RCA_ROOT_CAUSE, ERROR_MESSAGE
+            FROM {client.full_table} WHERE INCIDENT_ID = ?""",
+        (incident_id,)
+    )
+    ai_row = cursor.fetchone()
+    cursor.close()
+
+    ai_diagnosis = (ai_row[0] or "") if ai_row else ""
+    ai_proposed_fix = (ai_row[1] or "") if ai_row else ""
+    ai_confidence = float(ai_row[2] or 0.0) if ai_row else 0.0
+    ai_fix_patch_raw = (ai_row[3] or "null") if ai_row else "null"
+    rca_root_cause = (ai_row[4] or "unknown") if ai_row else "unknown"
+    error_message = (ai_row[5] or "") if ai_row else ""
+
+    # Extract failed_action_name from AI fix patch if available
+    failed_action_name = None
+    try:
+        import json as _json
+        fix_patch_data = _json.loads(ai_fix_patch_raw) if ai_fix_patch_raw and ai_fix_patch_raw != "null" else {}
+        if isinstance(fix_patch_data, dict):
+            failed_action_name = (
+                fix_patch_data.get("failed_action_name")
+                or fix_patch_data.get("affected_component")
+            )
+    except Exception:
+        pass
+
+    rca_result = {
+        "root_cause": rca_root_cause,
+        "suggested_fix": ai_proposed_fix or req.proposed_fix or "",
+        "confidence": ai_confidence,
+        "solution": ai_diagnosis,
+        "exact_issue": error_message,
+    }
+
+    workflow_context = {
+        "workflow_name": workflow_name,
+        "run_id": incident_id,
+        "subscription_id": effective_sub_id,
+        "resource_group": settings.AZURE_RESOURCE_GROUP,
+        "failed_action_name": failed_action_name,
+        "backup_dir": None,
+        "error_type": error_category,
+        "suggested_fix": rca_result["suggested_fix"],
+    }
+
+    # Run Fixer in a thread to avoid blocking the asyncio event loop
+    import asyncio as _asyncio
+    from services.agents.fixer.Fixer_agent import FixerAgent
+
+    def _run_fixer():
+        fixer = FixerAgent(settings)
+        return fixer.fix(rca_result, workflow_context)
+
+    try:
+        cursor = client.conn.cursor()
+        cursor.execute(
+            f"UPDATE {client.full_table} SET STATUS = 'FIX_IN_PROGRESS', AUTO_FIX_ATTEMPTED = TRUE WHERE INCIDENT_ID = ?",
+            (incident_id,)
+        )
+        client.conn.commit()
+        cursor.close()
+
+        fix_result = await _asyncio.wait_for(
+            _asyncio.to_thread(_run_fixer),
+            timeout=180.0,
+        )
+    except _asyncio.TimeoutError:
+        logger.error("Fixer timed out for %s", incident_id)
+        fix_result = {"success": False, "error": "Fix timed out after 3 minutes."}
+    except Exception as exc:
+        logger.error("Fixer failed for %s: %s", incident_id, exc, exc_info=True)
+        fix_result = {"success": False, "error": str(exc)}
+
+    success = bool(fix_result.get("success"))
     new_status = "AUTO_FIXED" if success else "FIX_FAILED"
+    fix_strategy = fix_result.get("fix_strategy") or {}
+    summary = (
+        fix_strategy.get("strategy_description")
+        or fix_result.get("error")
+        or ("Fix applied and deployed successfully." if success else "Fix failed — see logs.")
+    )
 
     cursor = client.conn.cursor()
     cursor.execute(
-        f"UPDATE {client.full_table} SET STATUS = ?, AUTO_FIX_ATTEMPTED = TRUE, AUTO_FIX_SUCCESS = ? WHERE INCIDENT_ID = ?",
-        (new_status, success, incident_id)
+        f"UPDATE {client.full_table} SET STATUS = ?, AUTO_FIX_SUCCESS = ?, FIX_STRATEGY = ? WHERE INCIDENT_ID = ?",
+        (new_status, success, summary, incident_id)
     )
     client.conn.commit()
     cursor.close()
-    return {"status": new_status, "summary": result.get("fix_strategy", {}).get("strategy_description", "")}
+    return {"status": new_status, "summary": summary}
 
 
 @router.get("/monitor/fix-status/{incident_id}")
@@ -415,7 +550,7 @@ async def get_fix_status(incident_id: str):
     status, success, fix_summary = row
     cursor.close()
 
-    steps_done = ["Submit", "Get iFlow", "Validate", "Patch", "Deploy"] if success else []
+    steps_done = ["Submit", "Get Workflow", "Validate", "Patch", "Deploy"] if success else []
     return {
         "status": status,
         "fix_summary": fix_summary,
