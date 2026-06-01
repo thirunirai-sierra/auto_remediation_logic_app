@@ -3,6 +3,7 @@
 Ingestion endpoints for Logic Apps failure telemetry.
 """
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Query
 
@@ -26,12 +27,11 @@ else:
 
 def query_log_analytics_range(start: datetime, end: datetime) -> list:
     """Query Azure Log Analytics for failed Logic App runs."""
-    # Ensure datetimes are timezone-aware (UTC)
     if start.tzinfo is None:
         start = start.replace(tzinfo=timezone.utc)
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
-    
+
     cred = ClientSecretCredential(
         tenant_id=settings.AZURE_TENANT_ID,
         client_id=settings.AZURE_CLIENT_ID,
@@ -44,27 +44,49 @@ def query_log_analytics_range(start: datetime, end: datetime) -> list:
     | where Category == "WorkflowRuntime"
     | where status_s == "Failed"
     | where TimeGenerated between (datetime({start.isoformat()}) .. datetime({end.isoformat()}))
-    | project 
+    | project
         TimeGenerated,
         resource_runId_s,
         resource_workflowName_s,
         error_code_s,
-        error_message_s
+        error_message_s,
+        _ResourceId
     """
     response = logs_client.query_workspace(
         workspace_id=settings.LOG_ANALYTICS_WORKSPACE_ID,
         query=query,
         timespan=(start, end),
     )
-    rows = response.tables[0].rows if response.tables else []
+    if not response.tables:
+        return []
+
+    columns = [col.name for col in response.tables[0].columns]
+    rows    = response.tables[0].rows
     results = []
     for row in rows:
+        rd = dict(zip(columns, row))
+
+        wf_name = rd.get("resource_workflowName_s") or ""
+        if not wf_name:
+            resource_id = str(rd.get("_ResourceId") or "")
+            m = re.search(r"/workflows/([^/]+)", resource_id, re.IGNORECASE)
+            if m:
+                wf_name = m.group(1)
+                logger.info("Resolved workflow_name='%s' from _ResourceId", wf_name)
+
+        run_id = rd.get("resource_runId_s") or ""
+        if not run_id or not wf_name:
+            logger.warning("Skipping row — missing run_id=%r or workflow_name=%r", run_id, wf_name)
+            continue
+
         results.append({
-            "TimeGenerated": row[0],
-            "resource_runId_s": row[1],
-            "resource_workflowName_s": row[2],
-            "error_code_s": row[3],
-            "error_message_s": row[4] if len(row) > 4 else ""
+            "TimeGenerated":          rd.get("TimeGenerated"),
+            "resource_runId_s":       run_id,
+            "resource_workflowName_s": rd.get("resource_workflowName_s") or "",
+            "workflow_name":          wf_name,
+            "error_code_s":           rd.get("error_code_s") or "unknown",
+            "error_message_s":        rd.get("error_message_s") or "",
+            "_ResourceId":            rd.get("_ResourceId") or "",
         })
     return results
 
@@ -96,7 +118,10 @@ def ingest_records(results: list, tracker) -> int:
     records = []
     for run in results:
         run_id = run.get("resource_runId_s") or run.get("run_id")
-        wf_name = run.get("resource_workflowName_s") or run.get("workflow_name")
+        wf_name = run.get("workflow_name") or run.get("resource_workflowName_s")
+        if not run_id or not wf_name:
+            logger.warning("ingest_records: skipping record with missing run_id=%r workflow_name=%r", run_id, wf_name)
+            continue
         error_msg = run.get("error_message_s", "")
         error_code = run.get("error_code_s", "unknown")
         original_timestamp = run.get("TimeGenerated")
