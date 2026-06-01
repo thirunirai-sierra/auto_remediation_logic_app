@@ -478,8 +478,10 @@ class FixerAgent:
                         continue
                     if field == "expression":
                         action_node["expression"] = value
-                    elif field == "inputs" and isinstance(action_node.get("inputs"), dict):
-                        action_node["inputs"].update(value)
+                    elif field == "inputs":
+                        if isinstance(action_node.get("inputs"), dict):
+                            action_node["inputs"].update(value)
+                        # else: action type (e.g. If/Condition) has no dict inputs — skip
                     else:
                         action_node[field] = value
             
@@ -542,8 +544,10 @@ class FixerAgent:
                     continue
                 if field == "retryPolicy" and node_type not in _RETRY_ELIGIBLE_TYPES:
                     continue
-                if field == "inputs" and isinstance(node.get("inputs"), dict):
-                    node["inputs"].update(value)
+                if field == "inputs":
+                    if isinstance(node.get("inputs"), dict):
+                        node["inputs"].update(value)
+                    # else: action type (e.g. If/Condition/Switch) has no dict inputs — skip
                 else:
                     node[field] = value
             patched += 1
