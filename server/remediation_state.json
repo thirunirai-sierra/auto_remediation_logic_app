@@ -853,6 +853,90 @@
       "auto_fix_success": false,
       "fix_strategy": null,
       "root_cause": "Upstream dependency did not succeed"
+    },
+    "08584217314360203020361089759CU08": {
+      "run_id": "08584217314360203020361089759CU08",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-05-27T15:35:19.699009",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-27T15:35:19.699009",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Run-after dependency not met"
+    },
+    "08584217294698359236451708384CU12": {
+      "run_id": "08584217294698359236451708384CU12",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-05-27T15:59:26.700537",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-27T15:59:26.700537",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Missing/invalid path input to action"
+    },
+    "08584215702080633062810901090CU17": {
+      "run_id": "08584215702080633062810901090CU17",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-05-29T12:20:48.329442",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-29T12:20:48.329442",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Invalid or empty file path input"
+    },
+    "08584215690513525298339254909CU30": {
+      "run_id": "08584215690513525298339254909CU30",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-05-29T12:35:58.954560",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-29T12:35:58.954560",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "RunAfter dependency failure"
+    },
+    "08584213135262823468460122961CU21": {
+      "run_id": "08584213135262823468460122961CU21",
+      "workflow_name": "testflow",
+      "attempted_at": "2026-06-01T11:40:50.529351",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-01T11:40:50.529351",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "No successful predecessors (runAfter unmet)"
+    },
+    "08584213130420718270893384333CU08": {
+      "run_id": "08584213130420718270893384333CU08",
+      "workflow_name": "testflow",
+      "attempted_at": "2026-06-01T11:42:30.463233",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-01T11:42:30.463233",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Upstream dependency failure"
     }
   },
   "workflow_states": {
@@ -868,23 +952,23 @@
     },
     "gdrive-logic-app": {
       "workflow_name": "gdrive-logic-app",
-      "last_fixed_at": "2026-05-27T12:39:27.044792",
-      "last_fixed_run_id": "08584217412971097820096170006CU16",
+      "last_fixed_at": "2026-05-29T12:35:58.954560",
+      "last_fixed_run_id": "08584215690513525298339254909CU30",
       "error_type_fixed": "bad_request",
       "workflow_hash": "",
-      "fix_count": 56,
+      "fix_count": 70,
       "last_fix_strategy": null,
-      "last_root_cause": "Upstream dependency did not succeed"
+      "last_root_cause": "RunAfter dependency failure"
     },
     "testflow": {
       "workflow_name": "testflow",
-      "last_fixed_at": "2026-05-27T12:27:08.764997",
-      "last_fixed_run_id": "08584217429097565830487084944CU16",
+      "last_fixed_at": "2026-06-01T11:42:30.463233",
+      "last_fixed_run_id": "08584213130420718270893384333CU08",
       "error_type_fixed": "bad_request",
       "workflow_hash": "",
-      "fix_count": 44,
+      "fix_count": 47,
       "last_fix_strategy": null,
-      "last_root_cause": "Missing/invalid file path from dependency"
+      "last_root_cause": "Upstream dependency failure"
     },
     "Teams-FLOW": {
       "workflow_name": "Teams-FLOW",
@@ -908,5 +992,5 @@
     }
   },
   "workflow_hashes": {},
-  "last_updated": "2026-05-27T12:39:27.044792"
+  "last_updated": "2026-06-01T11:42:30.465562"
 }
