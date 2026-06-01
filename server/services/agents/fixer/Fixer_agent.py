@@ -96,21 +96,29 @@ class FixerAgent:
                 failed_action = {}
             action_type = (failed_action or {}).get("type", "unknown")
 
-            # 3. Generate fix strategy based on error type
+            # 3. Generate fix strategy — LLM first (real fix), rule-based fallback
             root_cause = rca_result.get("root_cause", "unknown")
             exact_issue = rca_result.get("exact_issue", "")
 
-            fix_strategy = self._generate_fix_strategy(
-                root_cause=root_cause,
-                exact_issue=exact_issue,
-                action_type=action_type,
-                action_config=failed_action,
-                error_message=(
-                    f"{rca_result.get('exact_issue', '')} {rca_result.get('solution', '')}"
-                ),
+            fix_strategy = self._generate_llm_based_fix(
+                definition=definition,
+                failed_action_name=failed_action_name,
+                failed_action=failed_action or {},
+                rca_result=rca_result,
             )
-
-            logger.info("[FIXER] Fix strategy: %s", fix_strategy.get("strategy_description", "N/A"))
+            if fix_strategy:
+                logger.info("[FIXER] LLM fix accepted: %s (confidence=%.2f)",
+                            fix_strategy.get("strategy_description"),
+                            fix_strategy.get("confidence", 0))
+            else:
+                fix_strategy = self._generate_fix_strategy(
+                    root_cause=root_cause,
+                    exact_issue=exact_issue,
+                    action_type=action_type,
+                    action_config=failed_action,
+                    error_message=f"{exact_issue} {rca_result.get('solution', '')}",
+                )
+                logger.info("[FIXER] Rule-based fix: %s", fix_strategy.get("strategy_description", "N/A"))
 
             # 4. Apply the fix
             fixed_workflow = self._apply_fix_to_workflow(
@@ -231,16 +239,13 @@ class FixerAgent:
                 "changes_applied": True,
             }
 
-        # Strategy for 404 error – use uppercase FALLBACK_HTTP_URL
         elif root == "not_found" or "404" in signal or "not found" in signal:
             return {
-                "strategy_description": "Fix 404 error by updating API endpoint",
-                "changes": {
-                    "inputs": {"uri": self.settings.FALLBACK_HTTP_URL}   # uppercase
-                },
-                "explanation": "The endpoint returned 404. Updated to a working fallback endpoint.",
-                "risk": "medium",
-                "changes_applied": True,
+                "strategy_description": "404 Not Found — LLM could not determine correct URL with sufficient confidence",
+                "changes": {},
+                "explanation": "The endpoint returned 404. The correct URL must be determined from application context.",
+                "risk": "none",
+                "changes_applied": False,
             }
 
         elif root == "timeout" or "timed out" in signal or "timeout" in signal:
@@ -305,6 +310,115 @@ class FixerAgent:
                 "changes_applied": False,
             }
     
+    def _call_llm_sync(self, system_prompt: str, user_prompt: str) -> Optional[Dict[str, Any]]:
+        """Call SAP AI Core LLM synchronously (safe from a worker thread — no event-loop nesting)."""
+        try:
+            from utils.llm_client import AICoreLLMClient
+            client = AICoreLLMClient.from_env()
+            llm = client._get_proxy_llm(temperature=0.0)
+            enhanced = (
+                system_prompt.strip()
+                + "\n\nRespond with ONLY a valid JSON object. No markdown, no explanation."
+                  " Start your response with '{' and end with '}'."
+            )
+            response = llm.invoke([
+                {"role": "system", "content": enhanced},
+                {"role": "user",   "content": user_prompt},
+            ])
+            content = str(getattr(response, "content", "") or "").strip()
+            logger.info("[FIXER] LLM raw response (len=%d): %s", len(content), content[:400])
+            return client._extract_json_from_text(content)
+        except Exception as exc:
+            logger.warning("[FIXER] LLM sync call failed: %s", exc)
+            return None
+
+    def _generate_llm_based_fix(
+        self,
+        definition: Dict[str, Any],
+        failed_action_name: Optional[str],
+        failed_action: Dict[str, Any],
+        rca_result: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Ask the LLM to produce a real, targeted patch for the failing action.
+        Returns a fix-strategy dict (same shape as _generate_fix_strategy) or None
+        if the LLM is not confident enough to make a change.
+        """
+        action_json      = json.dumps(failed_action, indent=2, default=str)[:2000]
+        definition_json  = json.dumps(definition,    indent=2, default=str)[:4000]
+
+        system_prompt = """You are an Azure Logic Apps expert and senior automation engineer.
+Your task: generate a REAL, targeted fix for a failing Logic App action.
+
+STRICT RULES:
+1. NEVER replace a URI with a dummy/test/placeholder URL (httpbin.org, example.com, mockapi, etc.)
+2. For 404 errors — fix the ACTUAL URI path based on the workflow context, or set confidence < 0.6 if you cannot determine the correct URL
+3. For timeout errors — add a retryPolicy
+4. For 400 bad_request — fix the inputs body or schema
+5. For null_reference — add coalesce() guards in expressions
+6. For auth errors — describe what connection needs updating in explanation
+
+Return ONLY this JSON structure (no extra text):
+{
+  "strategy_description": "Short description of the fix",
+  "fix_type": "uri_correction | retry_policy | inputs_fix | null_guard | connection_fix | error_handling",
+  "action_patch": {
+    // Fields to merge into the failing action node.
+    // uri_correction  → {"inputs": {"uri": "https://real-corrected-url/path"}}
+    // retry_policy    → {"retryPolicy": {"type": "fixed", "count": 3, "interval": "PT30S"}}
+    // inputs_fix      → {"inputs": {"body": { ...corrected body... }, "headers": {...}}}
+    // null_guard      → {} (leave empty; null-guard logic is applied separately)
+    // connection_fix  → {} (leave empty; explain in explanation field)
+  },
+  "changes_applied": true,
+  "confidence": 0.0,
+  "explanation": "Why this fix works and what it changes"
+}"""
+
+        user_prompt = f"""Failing action name: {failed_action_name or 'unknown'}
+Root cause category: {rca_result.get('root_cause', 'unknown')}
+Error details: {str(rca_result.get('exact_issue', ''))[:600]}
+RCA suggested fix: {str(rca_result.get('suggested_fix', '') or rca_result.get('solution', ''))[:400]}
+
+Current failing action configuration:
+{action_json}
+
+Full workflow definition (for context):
+{definition_json}
+
+Generate a precise fix. If you cannot determine a confident real fix, set confidence below 0.6."""
+
+        result = self._call_llm_sync(system_prompt, user_prompt)
+        if not result:
+            return None
+
+        confidence = float(result.get("confidence", 0))
+        if confidence < 0.6:
+            logger.info("[FIXER] LLM fix confidence %.2f too low — falling back to rule-based", confidence)
+            return None
+
+        action_patch = result.get("action_patch") or {}
+        fix_type     = result.get("fix_type", "llm_generated")
+
+        # null_guard maps to existing special handler
+        if fix_type == "null_guard":
+            fix_type = "contains_null_guard"
+
+        # If action_patch is empty AND it's not a special handler, nothing to apply
+        if not action_patch and fix_type not in ("contains_null_guard", "connection_fix"):
+            logger.warning("[FIXER] LLM returned empty action_patch for fix_type=%s", fix_type)
+            return None
+
+        return {
+            "strategy_description": result.get("strategy_description", "LLM-generated fix"),
+            "fix_type": fix_type,
+            "changes": action_patch,
+            "changes_applied": bool(action_patch) or fix_type == "contains_null_guard",
+            "confidence": confidence,
+            "explanation": result.get("explanation", ""),
+            "risk": "low" if confidence >= 0.8 else "medium",
+        }
+
     def _fix_contains_expression(self, expression: Any) -> str:
         """Fix contains() expression with coalesce."""
         if not isinstance(expression, str):
