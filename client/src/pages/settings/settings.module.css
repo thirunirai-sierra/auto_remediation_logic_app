@@ -12,7 +12,8 @@
   gap: 0.6rem;
   margin-bottom: 0.9rem;
 }
-.pageTitle { font-size: 1.1rem; font-weight: 700; color: #1e293b; margin: 0; flex-shrink: 0; }
+.pageTitle { font-size: 1.35rem; font-weight: 800; color: #1e293b; margin: 0; flex-shrink: 0; display: flex; align-items: center; gap: 0.4rem; }
+.pageTitleIcon { font-size: 1.2rem; color: #3b82f6; }
 .pageSubtitle { font-size: 0.8rem; color: #64748b; margin: 0; flex: 1; }
 .impactLegend { display: flex; gap: 0.4rem; flex-shrink: 0; }
 
@@ -78,13 +79,15 @@
 
 /* ── Settings rows ── */
 .settingsList { display: flex; flex-direction: column; }
-.settingRow { display: flex; align-items: flex-start; justify-content: space-between; gap: 1.5rem; padding: 0.85rem 0; border-bottom: 1px solid #f1f5f9; }
-.settingRow:last-child { border-bottom: none; padding-bottom: 0; }
+.settingRow { display: flex; align-items: flex-start; justify-content: space-between; gap: 1.5rem; padding: 0.85rem 1rem; border: 1px solid #e2e8f0; border-radius: 7px; margin-bottom: 0.45rem; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+.settingRow:last-child { margin-bottom: 0; }
 .settingLeft { flex: 1; min-width: 0; }
 .settingLabelRow { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; margin-bottom: 0.12rem; }
 .settingLabel { font-size: 0.86rem; font-weight: 600; color: #1e293b; }
 .settingKey { font-size: 0.73rem; font-family: monospace; color: #64748b; margin-bottom: 0.25rem; }
 .settingDesc { font-size: 0.79rem; color: #475569; margin: 0 0 0.25rem; line-height: 1.4; }
+.settingDefault { font-size: 0.76rem; color: #64748b; margin: 0.15rem 0; }
+.settingDefault strong { color: #374151; font-weight: 600; }
 .settingTakesEffect { display: flex; align-items: flex-start; gap: 0.28rem; font-size: 0.74rem; color: #3b82f6; line-height: 1.35; }
 .takesEffectIcon { flex-shrink: 0; }
 .settingRight { display: flex; flex-direction: column; align-items: flex-end; gap: 0.35rem; flex-shrink: 0; min-width: 100px; }
@@ -99,8 +102,8 @@
 .impactLow    { background: #dcfce7; color: #16a34a; }
 
 /* ── Buttons ── */
-.btnEdit { background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 5px; padding: 0.22rem 0.65rem; font-size: 0.77rem; color: #1e293b; cursor: pointer; white-space: nowrap; }
-.btnEdit:hover { background: #e2e8f0; }
+.btnEdit { background: #eff6ff; border: 1.5px solid #3b82f6; border-radius: 5px; padding: 0.22rem 0.65rem; font-size: 0.77rem; color: #1d4ed8; cursor: pointer; white-space: nowrap; font-weight: 600; }
+.btnEdit:hover { background: #dbeafe; }
 .btnReset { background: none; border: 1px solid #fde68a; border-radius: 5px; padding: 0.22rem 0.55rem; font-size: 0.74rem; color: #92400e; cursor: pointer; white-space: nowrap; }
 .btnReset:hover { background: #fffbeb; }
 .loadingRow { padding: 0.75rem 0; font-size: 0.84rem; color: #94a3b8; }
