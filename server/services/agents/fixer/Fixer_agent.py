@@ -77,7 +77,16 @@ class FixerAgent:
         run_id = workflow_context.get("run_id")
         failed_action_name = workflow_context.get("failed_action_name")
 
-        logger.info("[FIXER] Generating fix for %s", failed_action_name)
+        if not workflow_name or str(workflow_name).lower() in ("none", "unknown", ""):
+            logger.error("[FIXER] workflow_name is missing/None — cannot fix incident %s", run_id)
+            return {
+                "success": False,
+                "workflow_name": workflow_name,
+                "run_id": run_id,
+                "error": "Cannot fix: workflow_name is missing from the incident record. The Logic App name must be present to retrieve and patch the workflow.",
+            }
+
+        logger.info("[FIXER] Starting fix for workflow=%s action=%s", workflow_name, failed_action_name)
 
         try:
             # 1. Get current workflow
