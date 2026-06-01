@@ -564,34 +564,53 @@ class FixerAgent:
     ) -> Dict[str, Any]:
         """Deploy fixed workflow to Azure."""
         max_retries = 3
-        
+
         for attempt in range(max_retries):
             try:
-                logger.info(f"[FIXER] Deploying to Azure (attempt {attempt + 1})...")
+                logger.info("[FIXER] Deploying to Azure (attempt %d/%d)...", attempt + 1, max_retries)
                 body = strip_read_only_for_put(fixed_workflow)
-                
+                logger.info("[FIXER] PUT body keys: %s | properties keys: %s",
+                            list(body.keys()),
+                            list(body.get("properties", {}).keys()))
+
                 result = put_workflow(
                     token=self.token,
                     subscription_id=subscription_id,
                     resource_group=resource_group,
                     workflow_name=workflow_name,
                     workflow_body=body,
-                    etag=etag if attempt == 0 else "*",
+                    etag=etag if attempt == 0 else None,
                 )
-                
-                logger.info(f"[FIXER] Successfully deployed")
+
+                logger.info("[FIXER] Successfully deployed")
                 return {"success": True, "updated_workflow": result}
-                
+
             except requests.HTTPError as e:
-                if e.response and e.response.status_code in (409, 412) and attempt < max_retries - 1:
-                    logger.warning(f"[FIXER] Conflict, retrying...")
+                status = e.response.status_code if e.response is not None else 0
+                azure_msg = ""
+                if e.response is not None:
+                    try:
+                        err_json = e.response.json()
+                        azure_msg = (
+                            err_json.get("error", {}).get("message")
+                            or err_json.get("message")
+                            or e.response.text[:600]
+                        )
+                    except Exception:
+                        azure_msg = e.response.text[:600]
+                    logger.error("[FIXER] Azure %s on attempt %d: %s", status, attempt + 1, azure_msg)
+
+                if status in (409, 412) and attempt < max_retries - 1:
+                    logger.warning("[FIXER] Conflict/precondition, retrying without etag...")
                     time.sleep(2 ** attempt)
                     continue
-                return {"success": False, "error": str(e)[:200]}
-            
+
+                human_msg = azure_msg or str(e)
+                return {"success": False, "error": f"Azure {status}: {human_msg[:400]}"}
+
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         return {"success": False, "error": "Max retries exceeded"}
     
 # Singleton
