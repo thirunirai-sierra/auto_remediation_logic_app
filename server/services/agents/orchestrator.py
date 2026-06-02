@@ -426,7 +426,7 @@ class Orchestrator:
             try:
                 rca_result = await asyncio.wait_for(
                     generate_rca(obs_result["failed_action"], error_ctx, error_type, self.settings),
-                    timeout=100.0,
+                    timeout=180.0,
                 )
                 logger.info(
                     "RCA result: root_cause=%s, suggested_fix=%s, confidence=%s",
@@ -435,7 +435,7 @@ class Orchestrator:
                     rca_result.get("confidence", 0),
                 )
             except asyncio.TimeoutError:
-                logger.error("RCA timed out after 100 seconds – using fallback")
+                logger.error("RCA timed out after 180 seconds – using fallback")
                 rca_result = self._fallback_rca(error_ctx)
             except Exception as e:
                 logger.error("RCA failed: %s – using fallback", e)
