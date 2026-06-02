@@ -106,7 +106,7 @@ class FixerAgent:
         error_type = workflow_context.get("error_type", "unknown")
 
         logger.info("=" * 100)
-        logger.info("PRODUCTION FIXER V3 - LLM with Graceful Fallback")
+        logger.info("PRODUCTION FIXER - LLM with Graceful Fallback")
         logger.info("=" * 100)
         logger.info(f"Workflow: {workflow_name} | Run: {run_id}")
         logger.info(f"Failed Action: {failed_action_name}")
