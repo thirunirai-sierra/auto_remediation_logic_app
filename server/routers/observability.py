@@ -274,6 +274,7 @@ async def analyze_message(incident_id: str):
             RCA_ROOT_CAUSE = COALESCE(RCA_ROOT_CAUSE, ?)
         WHERE INCIDENT_ID = ?
     """
+    confidence = float(confidence) if confidence is not None else 0.0
     cursor.execute(update_sql, (diagnosis, proposed_fix, confidence, diagnosis, incident_id))
     client.conn.commit()
     cursor.close()
@@ -402,14 +403,23 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     Apply fix by triggering the orchestrator (if auto‑fix is allowed).
     Updates status to AUTO_FIXED or FIX_FAILED.
 
+    If the incident record does not contain a failed_action_name, this endpoint
+    will attempt to retrieve it by calling the Observer with the original Azure run_id
+    (stored in the RUN_ID column).
+
     Args:
         incident_id: Incident identifier.
-        req: Request body (ignored, kept for compatibility).
+        req: Request body (trigger_type, proposed_fix, force).
 
     Returns:
         dict: New status and summary.
     """
     from services.agents.orchestrator import Orchestrator
+    from routers.settings import get_error_policy
+    from services.agents.observer import Observer
+    import json as _json
+    import asyncio as _asyncio
+    from services.agents.fixer.Fixer_agent import FixerAgent
 
     client = get_hana_client()
     if not client or not client._ensure_connected():
@@ -417,13 +427,14 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
 
     cursor = client.conn.cursor()
     cursor.execute(
-        f"SELECT WORKFLOW_NAME, SUBSCRIPTION_ID, ERROR_CATEGORY, ERROR_MESSAGE, RESOURCE_GROUP FROM {client.full_table} WHERE INCIDENT_ID = ?",
+        f"SELECT WORKFLOW_NAME, SUBSCRIPTION_ID, ERROR_CATEGORY, ERROR_MESSAGE, RESOURCE_GROUP, RUN_ID "
+        f"FROM {client.full_table} WHERE INCIDENT_ID = ?",
         (incident_id,)
     )
     row = cursor.fetchone()
     if not row:
         raise HTTPException(404, "Incident not found")
-    workflow_name, sub_id, error_category, _error_msg, resource_group_db = row
+    workflow_name, sub_id, error_category, _error_msg, resource_group_db, run_id = row
     cursor.close()
 
     if not workflow_name or str(workflow_name).lower() in ("none", "unknown", ""):
@@ -436,10 +447,7 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
             ),
         }
 
-    # Check remediation policy for this error type.
-    # When the user explicitly clicks Apply Fix (force=True), bypass the policy —
-    # the click itself is the human approval.
-    from routers.settings import get_error_policy
+    # Check remediation policy (force bypasses it)
     policy = get_error_policy(error_category or "UNKNOWN_ERROR")
     logger.info("apply-fix: incident=%s error=%s policy=%s force=%s", incident_id, error_category, policy, req.force)
 
@@ -450,14 +458,12 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
             client.conn.commit()
             cursor.close()
             return {"status": "AWAITING_APPROVAL", "summary": f"Policy for {error_category} requires human approval. Click Apply Fix to override and deploy."}
-
         if policy == "RETRY":
             cursor = client.conn.cursor()
             cursor.execute(f"UPDATE {client.full_table} SET STATUS = 'RETRIED', AUTO_FIX_ATTEMPTED = TRUE, AUTO_FIX_SUCCESS = TRUE WHERE INCIDENT_ID = ?", (incident_id,))
             client.conn.commit()
             cursor.close()
             return {"status": "RETRIED", "summary": f"Policy for {error_category} triggers automatic retry."}
-
         if policy == "TICKET_CREATED":
             cursor = client.conn.cursor()
             cursor.execute(f"UPDATE {client.full_table} SET STATUS = 'TICKET_CREATED', AUTO_FIX_ATTEMPTED = TRUE, AUTO_FIX_SUCCESS = FALSE WHERE INCIDENT_ID = ?", (incident_id,))
@@ -467,10 +473,6 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     else:
         logger.info("apply-fix: force=True — bypassing policy %s, applying fix directly", policy)
 
-    # policy == "AUTO_FIX" — apply fix directly using data already in HANA
-    # We bypass the Observer (which needs an Azure run_id) because Event Mesh incidents
-    # use internal IDs (ORBLOGICAPPS-*), not Azure run IDs.
-    # The AI diagnosis + fix plan are already stored from the Analyze/GenerateFixPatch steps.
     effective_sub_id = sub_id or settings.AZURE_SUBSCRIPTION_ID
     effective_rg = resource_group_db or settings.AZURE_RESOURCE_GROUP
 
@@ -490,7 +492,7 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
             "summary": "Azure ARM credentials not configured. Review the AI fix plan and apply manually.",
         }
 
-    # Read all AI data from HANA for direct fixer call
+    # Read AI data from HANA
     cursor = client.conn.cursor()
     cursor.execute(
         f"""SELECT AI_DIAGNOSIS, AI_PROPOSED_FIX, AI_CONFIDENCE, AI_FIX_PATCH,
@@ -508,10 +510,9 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     rca_root_cause = (ai_row[4] or "unknown") if ai_row else "unknown"
     error_message = (ai_row[5] or "") if ai_row else ""
 
-    # Extract failed_action_name from AI fix patch if available
+    # Try to extract failed_action_name from AI fix patch first
     failed_action_name = None
     try:
-        import json as _json
         fix_patch_data = _json.loads(ai_fix_patch_raw) if ai_fix_patch_raw and ai_fix_patch_raw != "null" else {}
         if isinstance(fix_patch_data, dict):
             failed_action_name = (
@@ -521,6 +522,46 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     except Exception:
         pass
 
+    # If still missing, use Observer with the original run_id (stored in RUN_ID column)
+    if not failed_action_name and run_id and not run_id.startswith("ORBLOGICAPPS-"):
+        logger.info("Failed action name missing — calling Observer for run_id=%s", run_id)
+        try:
+            observer = Observer(settings)
+            obs_result = await _asyncio.to_thread(
+                observer.analyze_failed_run,
+                effective_sub_id,
+                effective_rg,
+                workflow_name,
+                run_id
+            )
+            if obs_result.get("status") == "failed_action_found":
+                failed_action_name = obs_result.get("failed_action_name")
+                logger.info("Observer resolved failed_action_name=%s", failed_action_name)
+                # Persist it back to HANA for future use
+                cursor2 = client.conn.cursor()
+                cursor2.execute(
+                    f"UPDATE {client.full_table} SET FAILED_ACTION_NAME = ? WHERE INCIDENT_ID = ?",
+                    (failed_action_name, incident_id)
+                )
+                client.conn.commit()
+                cursor2.close()
+            else:
+                logger.warning("Observer could not determine failed action for run_id=%s", run_id)
+        except Exception as e:
+            logger.error("Observer call failed for incident %s: %s", incident_id, e)
+
+    if not failed_action_name:
+        logger.error("Could not resolve failed_action_name for incident %s", incident_id)
+        return {
+            "status": "FIX_FAILED",
+            "summary": (
+                "The failed action name could not be determined automatically. "
+                "Please review the workflow run history manually and then retry with the correct action name, "
+                "or use the Orchestrator API directly."
+            )
+        }
+
+    # Build RCA result and workflow context
     rca_result = {
         "root_cause": rca_root_cause,
         "suggested_fix": ai_proposed_fix or req.proposed_fix or "",
@@ -540,10 +581,7 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
         "suggested_fix": rca_result["suggested_fix"],
     }
 
-    # Run Fixer in a thread to avoid blocking the asyncio event loop
-    import asyncio as _asyncio
-    from services.agents.fixer.Fixer_agent import FixerAgent
-
+    # Run Fixer
     def _run_fixer():
         fixer = FixerAgent(settings)
         return fixer.fix(rca_result, workflow_context)

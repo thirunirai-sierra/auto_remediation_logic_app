@@ -633,9 +633,9 @@ class HanaClient:
             update_sql = f"""
                 UPDATE {self.full_table}
                 SET RUN_ID              = COALESCE(RUN_ID, ?),
-                    SUBSCRIPTION_ID     = ?,
-                    RESOURCE_GROUP = ?,
-                    WORKFLOW_NAME       = ?,
+                    SUBSCRIPTION_ID = COALESCE(?, SUBSCRIPTION_ID),
+                    RESOURCE_GROUP = COALESCE(?, RESOURCE_GROUP),
+                    WORKFLOW_NAME = COALESCE(?, WORKFLOW_NAME),
                     ERROR_CODE          = ?,
                     ERROR_MESSAGE       = ?,
                     ERROR_CATEGORY      = ?,

@@ -60,7 +60,7 @@ def query_log_analytics_range(start: datetime, end: datetime) -> list:
     if not response.tables:
         return []
 
-    columns = [col.name for col in response.tables[0].columns]
+    columns = response.tables[0].columns
     rows    = response.tables[0].rows
     results = []
     for row in rows:
