@@ -1,11 +1,15 @@
 """
-PRODUCTION FIXER V3 - LLM with graceful fallback.
+PRODUCTION FIXER V4 - Fully dynamic, LLM‑first with confidence threshold.
 Uses shared utilities from remediation.py for navigation and sanitisation.
+No hardcoded rule‑based fixes (except optional timeout rule).
 """
 
 from __future__ import annotations
 
-import asyncio,logging,copy,json
+import asyncio
+import copy
+import json
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.auth import get_arm_token
@@ -48,9 +52,10 @@ class FixerAgent:
     """
     Production-grade Logic Apps auto-remediation agent.
 
-    Uses rule‑based fixes for known patterns (timeouts) and LLM‑generated
-    patches for all other failures. All workflow navigation and sanitisation
-    are delegated to the shared remediation module.
+    Strategy:
+        - Timeout errors (optional): add exponential retry policy.
+        - All other errors: LLM‑generated patch with confidence threshold.
+        - No hardcoded rule‑based fixes for specific error patterns.
     """
 
     def __init__(self, settings: Optional[Settings] = None):
@@ -68,17 +73,7 @@ class FixerAgent:
         return self._token
 
     def fix(self, rca_result: Dict[str, Any], workflow_context: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Synchronous entry point for workflow remediation.
-
-        Args:
-            rca_result: Root cause analysis output.
-            workflow_context: Metadata (workflow_name, run_id, subscription_id,
-                               resource_group, failed_action_name).
-
-        Returns:
-            Result dictionary with keys: success, workflow_name, run_id, (error).
-        """
+        """Synchronous entry point for workflow remediation."""
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -105,8 +100,18 @@ class FixerAgent:
         failed_action_name = workflow_context.get("failed_action_name")
         error_type = workflow_context.get("error_type", "unknown")
 
+        # Guard: workflow_name must be valid
+        if not workflow_name or str(workflow_name).lower() in ("none", "unknown", ""):
+            logger.error("[FIXER] workflow_name is missing/None — cannot fix incident %s", run_id)
+            return {
+                "success": False,
+                "workflow_name": workflow_name,
+                "run_id": run_id,
+                "error": "Cannot fix: workflow_name is missing from the incident record.",
+            }
+
         logger.info("=" * 100)
-        logger.info("PRODUCTION FIXER - LLM with Graceful Fallback")
+        logger.info("PRODUCTION FIXER V4 - LLM with Confidence")
         logger.info("=" * 100)
         logger.info(f"Workflow: {workflow_name} | Run: {run_id}")
         logger.info(f"Failed Action: {failed_action_name}")
@@ -161,7 +166,6 @@ class FixerAgent:
             logger.info("STEP 4: Preparing for deployment...")
             updated_workflow = copy.deepcopy(workflow)
             updated_workflow["properties"]["definition"] = fixed_definition
-            # Use the shared sanitisation function
             updated_workflow = rem.strip_read_only_for_put(updated_workflow)
 
             # Step 5: Deploy
@@ -211,7 +215,7 @@ class FixerAgent:
     def _fix_timeout(
         self, definition: Dict[str, Any], action_path: List[str], action_node: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
-        """Deterministic fix for timeouts: add exponential retry policy."""
+        """Deterministic fix for timeouts: add exponential retry policy (optional, can be removed)."""
         action_type = (action_node.get("type") or "").lower()
         if action_type not in ("http", "httpwebhook"):
             logger.info(f"Timeout fix skipped for type '{action_type}'")
@@ -245,7 +249,7 @@ class FixerAgent:
         rca_result: Dict[str, Any],
         workflow_context: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        """LLM‑driven patch generation with graceful fallback."""
+        """LLM‑driven patch generation with confidence threshold and fallback to original definition."""
         try:
             action_name = action_path[-1]
             action_type = (action_node.get("type") or "").lower()
@@ -253,89 +257,90 @@ class FixerAgent:
             logger.info("Calling LLM for dynamic fix...")
             llm = AICoreLLMClient.from_env()
 
+            # System prompt – explicit about allowed fields and confidence
             system_prompt = f"""You are an Azure Logic Apps expert fixer.
-        ACTION TYPE: {action_type}
-        TASK: Fix this Azure Logic Apps action with the smallest safe patch.
+ACTION TYPE: {action_type}
+TASK: Fix this failed action with a minimal, safe JSON patch.
 
-        STRICT RULES:
-        - Only return JSON with this shape: {{"patch": {{...}}}}
-        - Return ONLY the minimal patch required to fix the failed action.
-        - NEVER change workflow structure.
-        - NEVER return top-level keys such as 'actions', 'Condition', 'If', 'Scope', 'Foreach', 'Until', or 'Switch'.
-        - NEVER change 'type', 'host', 'method', 'path', 'connection', 'authentication', or any other immutable integration settings unless explicitly allowed.
-        - Do not rewrite the whole action.
-        - Use dotted keys for nested fields when needed.
+RULES:
+- Return ONLY valid JSON: {{"patch": {{...}}, "confidence": 0.0}}
+- NEVER change workflow structure (no 'actions', 'Condition', 'If', etc.).
+- NEVER change immutable settings: 'type', 'host', 'method', 'path', 'connection', 'authentication'.
+- Use dotted keys for nested fields: "inputs.queries.path"
+- If the issue is caused by nullable values, use coalesce() with a safe default.
+- If no safe fix exists, return {{"patch": {{}}, "confidence": 0.0}}
 
-        ACTION-TYPE RULES:
-        - If action type is 'if', you may ONLY modify 'expression'
-        - If action type is 'apiconnection', you may ONLY modify:
-        'inputs.queries.path','inputs.method', 'trackedProperties', 'description'
-        - If action type is 'http' or 'httpwebhook', you may ONLY modify:
-        'retryPolicy', 'runtimeConfiguration', 'operationOptions', 'description', 'trackedProperties'
-        - For all other action types, you may ONLY modify:
-        'description', 'trackedProperties', 'runAfter'
+Allowed fields for action type '{action_type}':
+- 'if' / 'condition' → only 'expression'
+- 'apiconnection' → 'inputs.queries.path', 'inputs.method', 'trackedProperties', 'description'
+- 'http' / 'httpwebhook' → 'retryPolicy', 'runtimeConfiguration', 'operationOptions', 'description', 'trackedProperties'
+- other types → 'description', 'trackedProperties', 'runAfter'
 
-        PATCH QUALITY RULES:
-        - Prefer minimal, safe, backward-compatible changes.
-        - If the issue is caused by nullable values, use coalesce() with a safe default.
-        - If no safe fix is possible under these rules, return {{"patch": {{}}}}.
-        """
-            action_snippet = json.dumps(action_node, indent=2, default=str)[:2500]  # increased limit
+Set confidence >= 0.6 if you are confident the patch will fix the issue, otherwise 0.0.
+Return JSON only.
+"""
+
+            action_snippet = json.dumps(action_node, indent=2, default=str)[:2500]
             user_prompt = f"""
-            FAILED ACTION DETAILS:
-            Name: {action_name}
-            Failed Action Name: {workflow_context.get('failed_action_name')}
-            Type: {action_type}
-            Error Type: {workflow_context.get('error_type')}
-            Root Cause: {rca_result.get('root_cause')}
-            Exact Issue: {rca_result.get('exact_issue', '')}
+FAILED ACTION:
+Name: {action_name}
+Type: {action_type}
+Error Type: {workflow_context.get('error_type')}
+Root Cause: {rca_result.get('root_cause')}
+Exact Issue: {rca_result.get('exact_issue', '')[:300]}
 
-            CURRENT ACTION JSON:
-            {action_snippet}
+CURRENT ACTION JSON:
+{action_snippet}
 
-            INSTRUCTIONS:
-            - Analyze the failure and infer a safe fix.
-            - Produce the smallest possible safe patch.
-            - Use dotted keys for nested updates.
-            - Do not include explanations.
-            - Return JSON only.
-            """
-        
-        
+INSTRUCTIONS:
+Analyze the failure and produce a minimal fix patch.
+Return JSON with keys "patch" and "confidence".
+"""
+
             response = await asyncio.wait_for(
                 llm.complete_json(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
-                    required_keys=["patch"],
+                    required_keys=["patch", "confidence"],
                 ),
                 timeout=120,
             )
 
-            if response and "patch" in response:
-                patch = response.get("patch", {})
-                if isinstance(patch, dict) and patch:
-                    fixed_def = copy.deepcopy(definition)
-                    node = rem.navigate_path(fixed_def, action_path)
-                    if node:
-                        self._apply_nested_patch(node, patch)
-                        logger.info(f"   Applied LLM patch with {len(patch)} changes")
-                        return fixed_def
-                else:
-                    logger.warning("LLM returned empty patch - no changes needed")
-                    return definition
-            else:
+            if not response or "patch" not in response:
                 logger.warning("LLM returned invalid response")
                 return definition
 
+            confidence = float(response.get("confidence", 0.0))
+            patch = response.get("patch", {})
+
+            if confidence < 0.6:
+                logger.warning(f"LLM confidence too low ({confidence:.2f}) – skipping fix")
+                return definition
+
+            if not isinstance(patch, dict) or not patch:
+                logger.warning("LLM returned empty patch – no changes needed")
+                return definition
+
+            # Apply the patch
+            fixed_def = copy.deepcopy(definition)
+            node = rem.navigate_path(fixed_def, action_path)
+            if not node:
+                logger.error(f"Could not navigate to action node '{action_name}' after deep copy")
+                return definition
+
+            self._apply_nested_patch(node, patch)
+            logger.info(f"   Applied LLM patch with {len(patch)} change(s), confidence={confidence:.2f}")
+            return fixed_def
+
         except asyncio.TimeoutError:
-            logger.warning("LLM call timed out - skipping LLM fix")
+            logger.warning("LLM call timed out – skipping fix")
             return definition
         except Exception as e:
-            logger.warning(f"LLM fix failed ({str(e)[:100]}) - skipping LLM fix")
+            logger.warning(f"LLM fix failed: {str(e)[:100]} – skipping fix")
             return definition
 
     def _apply_nested_patch(self, node: Dict[str, Any], patch: Dict[str, Any]) -> None:
-        """Apply patch with dotted key support (used only for LLM patches)."""
+        """Apply patch with dotted key support."""
         for key, value in patch.items():
             if "." in key:
                 parts = key.split(".")

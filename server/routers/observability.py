@@ -426,6 +426,16 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     workflow_name, sub_id, error_category, _error_msg, resource_group_db = row
     cursor.close()
 
+    if not workflow_name or str(workflow_name).lower() in ("none", "unknown", ""):
+        return {
+            "status": "SKIPPED",
+            "summary": (
+                "Cannot apply fix: the incident record has no workflow_name. "
+                "The Logic App name must be known to retrieve and patch the workflow in Azure. "
+                "Update the incident with the correct workflow name and retry."
+            ),
+        }
+
     # Check remediation policy for this error type.
     # When the user explicitly clicks Apply Fix (force=True), bypass the policy —
     # the click itself is the human approval.

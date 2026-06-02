@@ -169,7 +169,7 @@ async def continuous_monitor(settings):
                 seen = set()
                 unique_failures = []
                 for row in rows:
-                    wf = row.get("resource_workflowName_s")
+                    wf  = row.get("workflow_name") or row.get("resource_workflowName_s")
                     rid = row.get("resource_runId_s")
                     if not wf or not rid:
                         continue

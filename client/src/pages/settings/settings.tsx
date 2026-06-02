@@ -45,7 +45,7 @@ function applyThemeCss(t: typeof THEMES[number]) {
 const FONT_SIZES = ["S", "M", "L"] as const;
 type FontSize = typeof FONT_SIZES[number];
 
-const SETTING_CATEGORIES = ["All", "Fix Behaviour", "Throughput", "Timing"] as const;
+const SETTING_CATEGORIES = ["All", "Fix Behaviour", "Throughput", "Timing", "Remediation Policies"] as const;
 
 const POLICY_ACTIONS: { value: string; label: string; color: string; bg: string }[] = [
   { value: "AUTO_FIX",          label: "Auto-Fix",          color: "#15803d", bg: "#f0fdf4" },
@@ -221,7 +221,7 @@ export default function Settings() {
 
       {/* ── Page header ── */}
       <div className={styles.pageHeaderRow}>
-        <h2 className={styles.pageTitle}>Runtime Settings</h2>
+        <h2 className={styles.pageTitle}><span className={styles.pageTitleIcon}>⚙</span> Runtime Settings</h2>
         <p className={styles.pageSubtitle}>Changes apply immediately — no restart required. All overrides are held in memory.</p>
         <div className={styles.impactLegend}>
           <span className={`${styles.impactBadge} ${styles.impactHigh}`}>HIGH IMPACT</span>
@@ -299,7 +299,37 @@ export default function Settings() {
             <button key={c} className={`${styles.categoryTab} ${settingCategory === c ? styles.categoryTabActive : ""}`} onClick={() => setSettingCategory(c)}>{c}</button>
           ))}
         </div>
-        {settingsLoading ? (
+        {settingCategory === "Remediation Policies" ? (
+          policiesLoading ? <div className={styles.loadingRow}>Loading policies…</div>
+          : policies.length === 0 ? <div className={styles.loadingRow}>Connect the backend to load policies.</div>
+          : (
+            <div className={styles.policyGrid}>
+              {policies.map((p) => {
+                const am = POLICY_ACTIONS.find(a => a.value === p.action) ?? POLICY_ACTIONS[0];
+                return (
+                  <div key={p.error_type} className={`${styles.policyCard} ${p.overridden ? styles.policyCardOverridden : ""}`}>
+                    <div className={styles.policyCardHeader}>
+                      <div>
+                        <div className={styles.policyErrorType}>{p.error_type}</div>
+                        <div className={styles.policyDesc}>{p.description}</div>
+                      </div>
+                      {p.overridden && <button className={styles.policyResetBtn} onClick={() => handleResetPolicy(p.error_type)} disabled={savingPolicy === p.error_type}>↺</button>}
+                    </div>
+                    <div className={styles.policyCardFooter}>
+                      <div className={styles.policySelectWrapper} style={{ borderColor: am.color, background: am.bg }}>
+                        <span className={styles.policySelectDot} style={{ background: am.color }} />
+                        <select className={styles.policySelect} style={{ color: am.color }} value={p.action} disabled={savingPolicy === p.error_type} onChange={(e) => handlePolicyChange(p.error_type, e.target.value)}>
+                          {POLICY_ACTIONS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
+                        </select>
+                      </div>
+                      {!p.overridden ? <span className={styles.policyDefault}>default</span> : <span className={styles.policyCustom}>custom</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
+        ) : settingsLoading ? (
           <div className={styles.loadingRow}>Loading settings…</div>
         ) : filteredSettings.length === 0 ? (
           <div className={styles.loadingRow}>No settings in this category.</div>
@@ -314,6 +344,9 @@ export default function Settings() {
                   </div>
                   <div className={styles.settingKey}>{s.key}</div>
                   <p className={styles.settingDesc}>{s.description}</p>
+                  {s.default != null && (
+                    <div className={styles.settingDefault}>Default: <strong>{String(s.default)}</strong></div>
+                  )}
                   <div className={styles.settingTakesEffect}>
                     <span className={styles.takesEffectIcon}>⚡</span>
                     <span>Takes effect: <em>{s.takes_effect}</em></span>
@@ -335,7 +368,7 @@ export default function Settings() {
       </div>
 
       {/* ── Remediation Policies ── */}
-      <div className={styles.section}>
+      <div className={styles.section} style={{ display: settingCategory === "Remediation Policies" ? "none" : undefined }}>
         <h3 className={styles.sectionTitle}>Remediation Policies</h3>
         <p className={styles.sectionDesc}>
           Define how the pipeline responds to each error type. Changes take effect immediately on the next detected incident.
