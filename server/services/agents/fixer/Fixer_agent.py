@@ -16,6 +16,33 @@ from utils.llm_client import AICoreLLMClient
 
 logger = logging.getLogger(__name__)
 
+# Action types that support retryPolicy on Azure Logic Apps
+_RETRY_ELIGIBLE_TYPES = frozenset({
+    "http", "httpwebhook", "apiconnection", "apiconnectionwebhook",
+    "apiconnectionnotification", "function", "serviceprovider", "workflow",
+})
+
+
+def _collect_all_action_nodes(definition: Dict[str, Any]) -> list:
+    """Return a flat list of (name, node) for every action in the workflow definition."""
+    results: list = []
+
+    def walk(actions_obj: Any) -> None:
+        if not isinstance(actions_obj, dict):
+            return
+        for name, node in actions_obj.items():
+            if not isinstance(node, dict):
+                continue
+            results.append((name, node))
+            if isinstance(node.get("actions"), dict):
+                walk(node["actions"])
+            else_block = node.get("else")
+            if isinstance(else_block, dict) and isinstance(else_block.get("actions"), dict):
+                walk(else_block["actions"])
+
+    walk(definition.get("actions") or {})
+    return results
+
 
 class FixerAgent:
     """
@@ -79,7 +106,7 @@ class FixerAgent:
         error_type = workflow_context.get("error_type", "unknown")
 
         logger.info("=" * 100)
-        logger.info("PRODUCTION FIXER V3 - LLM with Graceful Fallback")
+        logger.info("PRODUCTION FIXER - LLM with Graceful Fallback")
         logger.info("=" * 100)
         logger.info(f"Workflow: {workflow_name} | Run: {run_id}")
         logger.info(f"Failed Action: {failed_action_name}")

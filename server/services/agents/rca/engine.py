@@ -78,7 +78,7 @@ Action inputs preview: {str(error_context.get('action_inputs', ''))[:300]}
                 user_prompt=user_prompt,
                 required_keys=["root_cause", "exact_issue", "solution", "suggested_fix", "confidence"]
             ),
-            timeout=100.0
+            timeout=180.0
         )
 
         if llm_result and isinstance(llm_result, dict):

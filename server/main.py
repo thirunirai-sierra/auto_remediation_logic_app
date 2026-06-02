@@ -7,12 +7,13 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import get_settings
-from routers import api_ingest, observability, knowledge, workflow,agents,dashboard
+from routers import api_ingest, observability, knowledge, workflow, settings as settings_router,agents,dashboard
 from services.agents.orchestrator import Orchestrator
 from services.workflow_service import get_workflow
 from services.auth import get_arm_token
 from db.hana_client import get_global_client
 from routers.api_ingest import query_log_analytics_range
+from routers import event_mesh as event_mesh_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger(__name__)
@@ -159,7 +160,7 @@ async def continuous_monitor(settings):
             end_time = datetime.now(timezone.utc)
             start_time = end_time - timedelta(hours=settings.LOOKBACK_HOURS)
             logger.info("[MONITOR] Querying Log Analytics from %s to %s", start_time.isoformat(), end_time.isoformat())
-            rows = query_log_analytics_range(start_time, end_time)
+            rows = await asyncio.to_thread(query_log_analytics_range, start_time, end_time)
 
             if not rows:
                 logger.info("[MONITOR] No new failures found")
@@ -251,14 +252,15 @@ app = FastAPI(
     version="3.0.0",
     lifespan=lifespan,
 )
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 app.include_router(api_ingest.router, prefix="/api/ingest", tags=["ingestion"])
 app.include_router(observability.router, prefix="/api", tags=["observability"])
 app.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"])
 app.include_router(workflow.router, prefix="/workflows", tags=["workflows"])
 app.include_router(dashboard.router)
 app.include_router(agents.router)
-
+app.include_router(settings_router.router)
+app.include_router(event_mesh_router.router)
 
 @app.get("/api/monitor/status")
 async def api_monitor_status():

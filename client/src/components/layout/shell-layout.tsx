@@ -16,11 +16,9 @@ const MOCK_USER: IUser = {
 
 const NAV_ITEMS: { key: string; label: string; icon: IconName }[] = [
   { key: "/dashboard",     label: "Dashboard",     icon: "dashboard"     },
-  // { key: "/agents",        label: "Agent Cards",   icon: "agents"        },  // hidden
-  // { key: "/orchestrator",  label: "Orchestrator",  icon: "orchestrator"  },  // hidden
-  // { key: "/test-suite",    label: "Test Suite",    icon: "test-suite"    },  // hidden
   { key: "/observability", label: "Observability", icon: "observability" },
   { key: "/pipeline",      label: "Pipeline",      icon: "pipeline"      },
+  { key: "/settings",      label: "Settings",      icon: "settings"      },
 ];
 
 interface ShellLayoutProps {

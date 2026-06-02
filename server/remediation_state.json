@@ -972,13 +972,13 @@
     },
     "Teams-FLOW": {
       "workflow_name": "Teams-FLOW",
-      "last_fixed_at": "2026-05-27T12:29:36.660726",
-      "last_fixed_run_id": "08584217428521608336553880715CU27",
+      "last_fixed_at": "2026-06-01T16:09:29.274392",
+      "last_fixed_run_id": "08584212968072058556931825535CU09",
       "error_type_fixed": "bad_request",
       "workflow_hash": "",
-      "fix_count": 12,
+      "fix_count": 13,
       "last_fix_strategy": null,
-      "last_root_cause": "Invalid HTTP method in connector call"
+      "last_root_cause": "Invalid HTTP method (typo 'posts')"
     },
     "File-upload": {
       "workflow_name": "File-upload",
