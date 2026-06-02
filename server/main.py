@@ -17,6 +17,7 @@ from services.workflow_service import get_workflow
 from services.auth import get_arm_token
 from db.hana_client import get_global_client
 from routers import agents
+from services.itsm_service import ensure_ticket_for_incident
 from routers import event_mesh as event_mesh_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
@@ -124,6 +125,9 @@ async def continuous_monitor(settings):
                             "rca_root_cause": result.get("root_cause"),
                             "suggested_fix": result.get("suggested_fix"),
                         })
+                        ticket_result = ensure_ticket_for_incident(client, run_id, status, settings)
+                        if ticket_result.get("error"):
+                            logger.error("Failed to create ITSM ticket for %s: %s", run_id, ticket_result["error"])
                     except Exception as e:
                         logger.error("Failed to update final status for %s: %s", run_id, e)
 
