@@ -11,6 +11,7 @@ const Observability = lazy(() => import("./pages/observability/observability.tsx
 const MigrationWizard = lazy(() => import("./pages/migration-wizard/migration-wizard.tsx"));
 const PipoList = lazy(() => import("./pages/pipo-list/pipo-list.tsx"));
 const Pipeline = lazy(() => import("./pages/pipeline/pipeline.tsx"));
+const Settings = lazy(() => import("./pages/settings/settings.tsx"));
 
 /**
  * Root React tree for authenticated area: routes + suspense fallback.
@@ -29,6 +30,7 @@ export default function App() {
           <Route path="/migration" element={<MigrationWizard />} />
           <Route path="/pipo" element={<PipoList />} />
           <Route path="/pipeline" element={<Pipeline />} />
+          <Route path="/settings" element={<Settings />} />
         </Routes>
       </Suspense>
     </ShellLayout>

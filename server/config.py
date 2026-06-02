@@ -2,6 +2,7 @@
 """
 Application configuration loaded from environment variables.
 """
+import os
 from pathlib import Path
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
@@ -27,7 +28,7 @@ class Settings(BaseSettings):
     # Azure API versions
     AZURE_API_RUNS_VERSION: str = "2019-05-01"
     AZURE_API_WORKFLOW_VERSION: str = "2019-05-01"
-    AZURE_API_TRIGGER_RUN_VERSION: str = "2016-06-01"
+    AZURE_API_TRIGGER_RUN_VERSION: str = "2019-05-01"
 
     # Remediation settings
     MAX_REMEDIATION_ATTEMPTS: int = 2
@@ -56,23 +57,21 @@ class Settings(BaseSettings):
     VECTOR_DIMENSION: int = 3072
 
     # Multi‑flow settings
-    LOOKBACK_HOURS: float
-    
+    LOOKBACK_HOURS: float = 0.3
 
-    
-    # Add these inside Settings class
+    # Tracker settings
     DRY_RUN: bool = False
     TRACKER_RETENTION_DAYS: int = 90
     TRACKER_MAX_RETRY_COUNT: int = 2
-    
-        # Knowledge scraper settings
+
+    # Knowledge scraper settings
     KNOWLEDGE_CHUNK_SIZE: int = 1200
     KNOWLEDGE_CHUNK_OVERLAP: int = 50
     KNOWLEDGE_SCRAPE_BATCH_SIZE: int = 3
     KNOWLEDGE_SCRAPE_TIMEOUT: float = 45.0
     KNOWLEDGE_SKIP_SLOW_URLS: bool = True
-    # Optional: comma‑separated list of URLs to scrape (if empty, use default)
     KNOWLEDGE_MICROSOFT_LEARN_URLS: str = ""
+
     class Config:
         # Don't load from .env again (we already loaded manually)
         env_file = None

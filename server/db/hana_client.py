@@ -178,6 +178,7 @@ class HanaClient:
         if exists:
             # Migrate missing columns
             new_columns = [
+                ("RESOURCE_GROUP", "NVARCHAR(128)"),
                 ("AI_DIAGNOSIS", "NCLOB"),
                 ("AI_PROPOSED_FIX", "NCLOB"),
                 ("AI_CONFIDENCE", "DOUBLE"),
@@ -205,6 +206,7 @@ class HanaClient:
             CREATE COLUMN TABLE {self.full_table} (
                 INCIDENT_ID          NVARCHAR(64) PRIMARY KEY,
                 SUBSCRIPTION_ID      NVARCHAR(64),
+                RESOURCE_GROUP       NVARCHAR(128),
                 WORKFLOW_NAME        NVARCHAR(256),
                 ERROR_CODE           NVARCHAR(128),
                 ERROR_MESSAGE        NCLOB,
@@ -257,7 +259,7 @@ class HanaClient:
         try:
             sql = f"""
                 INSERT INTO {self.full_table} (
-                    INCIDENT_ID, SUBSCRIPTION_ID, WORKFLOW_NAME,
+                    INCIDENT_ID, SUBSCRIPTION_ID, RESOURCE_GROUP, WORKFLOW_NAME,
                     ERROR_CODE, ERROR_MESSAGE, ERROR_CATEGORY,
                     STATUS, RCA_ROOT_CAUSE, FIX_STRATEGY,
                     CREATED_AT, UPDATED_AT,
@@ -265,11 +267,12 @@ class HanaClient:
                     AI_DIAGNOSIS, AI_PROPOSED_FIX, AI_CONFIDENCE,
                     AI_FIX_PATCH, FIELD_CHANGES, HISTORY_ENTRIES,
                     PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             cursor.execute(sql, (
                 record.get("incident_id"),
                 record.get("subscription_id"),
+                record.get("resource_group"),
                 record.get("workflow_name"),
                 record.get("error_code", "unknown"),
                 (record.get("error_message") or "")[:2000],
@@ -297,6 +300,7 @@ class HanaClient:
             update_sql = f"""
                 UPDATE {self.full_table}
                 SET SUBSCRIPTION_ID = ?,
+                    RESOURCE_GROUP = ?,
                     WORKFLOW_NAME = ?,
                     ERROR_CODE = ?,
                     ERROR_MESSAGE = ?,
@@ -321,6 +325,7 @@ class HanaClient:
             """
             cursor.execute(update_sql, (
                 record.get("subscription_id"),
+                record.get("resource_group"),
                 record.get("workflow_name"),
                 record.get("error_code", "unknown"),
                 (record.get("error_message") or "")[:2000],
@@ -381,7 +386,7 @@ class HanaClient:
             try:
                 sql = f"""
                     INSERT INTO {self.full_table} (
-                        INCIDENT_ID, SUBSCRIPTION_ID, WORKFLOW_NAME,
+                        INCIDENT_ID, SUBSCRIPTION_ID, RESOURCE_GROUP, WORKFLOW_NAME,
                         ERROR_CODE, ERROR_MESSAGE, ERROR_CATEGORY,
                         STATUS, RCA_ROOT_CAUSE, FIX_STRATEGY,
                         CREATED_AT, UPDATED_AT,
@@ -389,11 +394,12 @@ class HanaClient:
                         AI_DIAGNOSIS, AI_PROPOSED_FIX, AI_CONFIDENCE,
                         AI_FIX_PATCH, FIELD_CHANGES, HISTORY_ENTRIES,
                         PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
                 cursor.execute(sql, (
                     rec.get("incident_id"),
                     rec.get("subscription_id"),
+                    rec.get("resource_group"),
                     rec.get("workflow_name"),
                     rec.get("error_code", "unknown"),
                     (rec.get("error_message") or "")[:2000],
@@ -419,7 +425,7 @@ class HanaClient:
             except dbapi.IntegrityError:
                 update_sql = f"""
                     UPDATE {self.full_table}
-                    SET SUBSCRIPTION_ID = ?, WORKFLOW_NAME = ?, ERROR_CODE = ?, ERROR_MESSAGE = ?,
+                    SET SUBSCRIPTION_ID = ?, RESOURCE_GROUP = ?, WORKFLOW_NAME = ?, ERROR_CODE = ?, ERROR_MESSAGE = ?,
                         ERROR_CATEGORY = ?, STATUS = ?, RCA_ROOT_CAUSE = ?, FIX_STRATEGY = ?,
                         UPDATED_AT = ?, AUTO_FIX_ATTEMPTED = ?, AUTO_FIX_SUCCESS = ?, RETRY_COUNT = ?,
                         AI_DIAGNOSIS = COALESCE(AI_DIAGNOSIS, ?),
@@ -435,6 +441,7 @@ class HanaClient:
                 """
                 cursor.execute(update_sql, (
                     rec.get("subscription_id"),
+                    rec.get("resource_group"),
                     rec.get("workflow_name"),
                     rec.get("error_code", "unknown"),
                     (rec.get("error_message") or "")[:2000],

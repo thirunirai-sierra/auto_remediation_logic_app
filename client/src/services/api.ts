@@ -3,9 +3,9 @@
  * provides typed `fetch` helpers for dashboard, observability/monitor, pipeline, AEM/Event Mesh, and MCP endpoints.
  */
 
-/** Fallback primary API URL when `VITE_API_PRIMARY` is not set (deployed Orbit backend). */
+/** Fallback primary API URL when `VITE_API_PRIMARY` is not set (Logic Apps backend on BTP). */
 export const API_PRIMARY =
-  import.meta.env.VITE_API_PRIMARY ?? "https://ND-ORBIT.cfapps.us10-001.hana.ondemand.com";
+  import.meta.env.VITE_API_PRIMARY ?? "https://nd-orbit-eventmesh-be-logicapps.cfapps.us10-001.hana.ondemand.com";
 
 /** True when running in browser on localhost — uses same-origin empty base (Vite proxy). */
 const isLocalHost =
@@ -600,7 +600,7 @@ export interface LogsOverviewResponse {
   };
   status_breakdown: Array<{ status: string; count: number }>;
   error_distribution: Array<{ error_type: string; count: number }>;
-  top_iflows: Array<{ iflow_name: string; failure_count: number }>;
+  top_iflows: Array<{ workflow_name: string; failure_count: number }>;
   timeline: Array<{ time: string; count: number }>;
   error_messages: Array<{
     integrationScenario: string | null;
@@ -646,4 +646,66 @@ export async function fetchIncidents(status?: string, limit = 50): Promise<{ inc
   const params = new URLSearchParams({ limit: String(limit) });
   if (status) params.set("status", status);
   return request(`${API_BASE}/autonomous/incidents?${params}`);
+}
+
+// ── Runtime Settings ───────────────────────────────────────────────────────────
+
+export interface RuntimeSetting {
+  key: string;
+  label: string;
+  category: string;
+  impact: "HIGH" | "MEDIUM" | "LOW";
+  description: string;
+  takes_effect: string;
+  unit: string;
+  type: "float" | "int" | "bool" | "str";
+  min?: number;
+  max?: number;
+  default: unknown;
+  value: unknown;
+  overridden: boolean;
+}
+
+export async function fetchRuntimeSettings(): Promise<{ settings: RuntimeSetting[] }> {
+  return request(`${API_BASE}/api/settings`);
+}
+
+export async function updateRuntimeSetting(key: string, value: unknown): Promise<RuntimeSetting> {
+  return request(`${API_BASE}/api/settings/${encodeURIComponent(key)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ value }),
+  });
+}
+
+export async function resetRuntimeSetting(key: string): Promise<RuntimeSetting> {
+  return request(`${API_BASE}/api/settings/${encodeURIComponent(key)}/reset`, {
+    method: "DELETE",
+  });
+}
+
+// ── Remediation Policies ───────────────────────────────────────────────────────
+
+export interface RemediationPolicy {
+  error_type: string;
+  description: string;
+  action: "AUTO_FIX" | "RETRY" | "TICKET_CREATED" | "AWAITING_APPROVAL";
+  default_action: string;
+  overridden: boolean;
+}
+
+export async function fetchPolicies(): Promise<{ policies: RemediationPolicy[] }> {
+  return request(`${API_BASE}/api/settings/policies`);
+}
+
+export async function updatePolicy(error_type: string, action: string): Promise<RemediationPolicy> {
+  return request(`${API_BASE}/api/settings/policies/${encodeURIComponent(error_type)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ action }),
+  });
+}
+
+export async function resetPolicy(error_type: string): Promise<RemediationPolicy> {
+  return request(`${API_BASE}/api/settings/policies/${encodeURIComponent(error_type)}/reset`, {
+    method: "DELETE",
+  });
 }

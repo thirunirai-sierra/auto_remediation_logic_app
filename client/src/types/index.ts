@@ -164,6 +164,7 @@ export interface IMessageDetail {
     status: string;
   };
   attachments: unknown[];
+  related_knowledge?: Array<{ title: string; content: string; similarity: number }>;
   history: IHistoryTimelineEntry[];
   related_knowledge?: { title: string; content: string; similarity: number }[];
 }

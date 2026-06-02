@@ -67,7 +67,7 @@ export default function Dashboard() {
     : {}) as Record<string, unknown>;
   const statusData = (logs.status_breakdown ?? []) as { status: string; count: number }[];
   const errorData = (logs.error_distribution ?? []) as { error_type: string; count: number }[];
-  const iflowData = (logs.top_iflows ?? []) as { iflow_name: string; failure_count: number }[];
+  const iflowData = (logs.top_iflows ?? []) as { workflow_name: string; failure_count: number }[];
   const timelineData = (logs.timeline ?? []) as { time: string; count: number }[];
 
   const allRecentFails = (logs.error_messages ?? []) as Record<string, unknown>[];
