@@ -1,9 +1,8 @@
 # server/routers/dashboard.py
 """
 Root-level endpoints for frontend dashboard (no /api prefix).
-Provides KPIs, error distribution, timeline, and recent incidents.
+FIXED: SQL GROUP BY clauses and HANA DATE function compatibility.
 """
-
 from fastapi import APIRouter, Query
 from db.hana_client import get_global_client
 from config import get_settings
@@ -15,24 +14,12 @@ settings = get_settings()
 
 
 def get_hana_client():
-    """Return the singleton HANA client."""
     return get_global_client()
 
 
 @router.get("/logs/overview")
 async def logs_overview(top: int = Query(1000, ge=1, le=5000)):
-    """
-    Aggregated metrics for the logs dashboard.
-
-    Returns KPIs, status breakdown, error distribution, top failing workflows,
-    timeline (by day), and recent error messages.
-
-    Args:
-        top (int): Maximum number of recent error messages to return. Default 1000.
-
-    Returns:
-        dict: Dashboard statistics and data.
-    """
+    """Aggregated metrics for logs dashboard (KPIs, distributions, timeline, recent errors)."""
     client = get_hana_client()
     if not client or not client._ensure_connected():
         return {
@@ -54,16 +41,16 @@ async def logs_overview(top: int = Query(1000, ge=1, le=5000)):
         # KPIs
         cursor.execute(f"SELECT COUNT(*) FROM {table}")
         total_logs = cursor.fetchone()[0]
-
+        
         cursor.execute(f"SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM {table}")
         total_flows = cursor.fetchone()[0] or 0
-
+        
         cursor.execute(f"SELECT COUNT(DISTINCT WORKFLOW_NAME) FROM {table} WHERE STATUS IN ('FIX_FAILED','FAILED')")
         error_flows = cursor.fetchone()[0] or 0
-
+        
         cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE STATUS IN ('AUTO_FIXED','FIX_VERIFIED')")
         fixed_flows = cursor.fetchone()[0] or 0
-
+        
         cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE ERROR_MESSAGE IS NOT NULL")
         total_error_messages = cursor.fetchone()[0]
 
@@ -72,19 +59,15 @@ async def logs_overview(top: int = Query(1000, ge=1, le=5000)):
         status_breakdown = [{"status": row[0], "count": row[1]} for row in cursor.fetchall()]
 
         # Error distribution
-        cursor.execute(
-            f"SELECT ERROR_CATEGORY, COUNT(*) FROM {table} WHERE ERROR_CATEGORY IS NOT NULL "
-            "GROUP BY ERROR_CATEGORY ORDER BY COUNT(*) DESC"
-        )
+        cursor.execute(f"SELECT ERROR_CATEGORY, COUNT(*) FROM {table} WHERE ERROR_CATEGORY IS NOT NULL GROUP BY ERROR_CATEGORY ORDER BY COUNT(*) DESC")
         error_distribution = [{"error_type": row[0] or "UNKNOWN", "count": row[1]} for row in cursor.fetchall()]
 
-        # Top failing workflows
-        cursor.execute(
-            f"SELECT WORKFLOW_NAME, COUNT(*) FROM {table} GROUP BY WORKFLOW_NAME ORDER BY COUNT(*) DESC LIMIT 10"
-        )
-        top_iflows = [{"iflow_name": row[0], "failure_count": row[1]} for row in cursor.fetchall()]
+        # Top iFlows
+        cursor.execute(f"SELECT WORKFLOW_NAME, COUNT(*) FROM {table} GROUP BY WORKFLOW_NAME ORDER BY COUNT(*) DESC LIMIT 10")
+        top_iflows = [{"workflow_name": row[0], "failure_count": row[1]} for row in cursor.fetchall()]
 
-        # Timeline (daily)
+        # Timeline - FIXED: Use CAST(... AS DATE) instead of DATE() for HANA
+        # Also ensure all non-aggregate columns are in GROUP BY
         cursor.execute(f"""
             SELECT CAST(CREATED_AT AS DATE) AS log_date, COUNT(*) as count
             FROM {table}
@@ -97,8 +80,7 @@ async def logs_overview(top: int = Query(1000, ge=1, le=5000)):
 
         # Recent error messages
         cursor.execute(f"""
-            SELECT WORKFLOW_NAME, ERROR_CODE, ERROR_MESSAGE, CREATED_AT,
-                   SUBSCRIPTION_ID, STATUS, INCIDENT_ID
+            SELECT WORKFLOW_NAME, ERROR_CODE, ERROR_MESSAGE, CREATED_AT, SUBSCRIPTION_ID, STATUS, INCIDENT_ID
             FROM {table}
             WHERE ERROR_MESSAGE IS NOT NULL
             ORDER BY CREATED_AT DESC
@@ -150,14 +132,7 @@ async def logs_overview(top: int = Query(1000, ge=1, le=5000)):
 
 @router.get("/incidents")
 async def incidents():
-    """
-    Simplified list of incidents for the logs page.
-
-    Returns the 500 most recent incidents with basic fields.
-
-    Returns:
-        list: List of incident dictionaries.
-    """
+    """Simplified list of incidents for the logs page."""
     client = get_hana_client()
     if not client or not client._ensure_connected():
         return []
@@ -165,8 +140,7 @@ async def incidents():
     try:
         cursor = client.conn.cursor()
         cursor.execute(f"""
-            SELECT INCIDENT_ID, SUBSCRIPTION_ID, WORKFLOW_NAME, ERROR_CODE,
-                   ERROR_MESSAGE, CREATED_AT
+            SELECT INCIDENT_ID, SUBSCRIPTION_ID, WORKFLOW_NAME, ERROR_CODE, ERROR_MESSAGE, CREATED_AT
             FROM {client.full_table}
             ORDER BY CREATED_AT DESC
             LIMIT 500
@@ -191,10 +165,5 @@ async def incidents():
 
 @router.get("/dashboard")
 async def dashboard():
-    """
-    Simple health / status endpoint for the dashboard.
-
-    Returns:
-        dict: Service status.
-    """
+    """Dashboard placeholder (returns a simple status)."""
     return {"status": "ok", "message": "Dashboard endpoint ready"}
