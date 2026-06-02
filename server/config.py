@@ -58,7 +58,7 @@ class Settings(BaseSettings):
 
     # Multi‑flow settings
     LOOKBACK_HOURS: float = 0.3
-
+    ENABLE_AUTO_MONITOR: bool = True 
     # Tracker settings
     DRY_RUN: bool = False
     TRACKER_RETENTION_DAYS: int = 90

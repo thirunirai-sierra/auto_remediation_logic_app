@@ -854,89 +854,215 @@
       "fix_strategy": null,
       "root_cause": "Upstream dependency did not succeed"
     },
-    "08584212979698017876395512602CU12": {
-      "run_id": "08584212979698017876395512602CU12",
+    "08584217314360203020361089759CU08": {
+      "run_id": "08584217314360203020361089759CU08",
       "workflow_name": "gdrive-logic-app",
-      "attempted_at": "2026-06-01T15:50:09.376481",
+      "attempted_at": "2026-05-27T15:35:19.699009",
       "error_type": "bad_request",
       "status": "attempted",
       "current_run_status": "unknown",
       "retry_count": 0,
-      "last_attempt_at": "2026-06-01T15:50:09.376481",
+      "last_attempt_at": "2026-05-27T15:35:19.699009",
       "auto_fix_attempted": true,
       "auto_fix_success": false,
       "fix_strategy": null,
-      "root_cause": "All dependencies failed/skipped"
+      "root_cause": "Run-after dependency not met"
     },
-    "08584212973688662338913961591CU05": {
-      "run_id": "08584212973688662338913961591CU05",
+    "08584217294698359236451708384CU12": {
+      "run_id": "08584217294698359236451708384CU12",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-05-27T15:59:26.700537",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-27T15:59:26.700537",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Missing/invalid path input to action"
+    },
+    "08584215702080633062810901090CU17": {
+      "run_id": "08584215702080633062810901090CU17",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-05-29T12:20:48.329442",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-29T12:20:48.329442",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Invalid or empty file path input"
+    },
+    "08584215690513525298339254909CU30": {
+      "run_id": "08584215690513525298339254909CU30",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-05-29T12:35:58.954560",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-05-29T12:35:58.954560",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "RunAfter dependency failure"
+    },
+    "08584213135262823468460122961CU21": {
+      "run_id": "08584213135262823468460122961CU21",
       "workflow_name": "testflow",
-      "attempted_at": "2026-06-01T16:02:37.127447",
+      "attempted_at": "2026-06-01T11:40:50.529351",
       "error_type": "bad_request",
       "status": "attempted",
       "current_run_status": "unknown",
       "retry_count": 0,
-      "last_attempt_at": "2026-06-01T16:02:37.127447",
+      "last_attempt_at": "2026-06-01T11:40:50.529351",
       "auto_fix_attempted": true,
       "auto_fix_success": false,
       "fix_strategy": null,
-      "root_cause": "Run-after dependencies unsatisfied"
+      "root_cause": "No successful predecessors (runAfter unmet)"
     },
-    "08584212968072058556931825535CU09": {
-      "run_id": "08584212968072058556931825535CU09",
+    "08584213130420718270893384333CU08": {
+      "run_id": "08584213130420718270893384333CU08",
+      "workflow_name": "testflow",
+      "attempted_at": "2026-06-01T11:42:30.463233",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-01T11:42:30.463233",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Upstream dependency failure"
+    },
+    "08584212165865238248880240085CU18": {
+      "run_id": "08584212165865238248880240085CU18",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-06-02T14:34:33.918558",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-02T14:34:33.918558",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Empty or invalid File Path parameter"
+    },
+    "08584212165084927344042283562CU24": {
+      "run_id": "08584212165084927344042283562CU24",
       "workflow_name": "Teams-FLOW",
-      "attempted_at": "2026-06-01T16:09:29.274392",
+      "attempted_at": "2026-06-02T14:29:43.965321",
       "error_type": "bad_request",
       "status": "attempted",
       "current_run_status": "unknown",
       "retry_count": 0,
-      "last_attempt_at": "2026-06-01T16:09:29.274392",
+      "last_attempt_at": "2026-06-02T14:29:43.965321",
       "auto_fix_attempted": true,
       "auto_fix_success": false,
       "fix_strategy": null,
-      "root_cause": "Invalid HTTP method (typo 'posts')"
+      "root_cause": "Invalid HTTP method 'posts' in action inputs"
     },
-    "08584212938705619531343064565CU27": {
-      "run_id": "08584212938705619531343064565CU27",
+    "08584212164501715930264491552CU08": {
+      "run_id": "08584212164501715930264491552CU08",
       "workflow_name": "testflow",
-      "attempted_at": "2026-06-01T17:09:12.596369",
+      "attempted_at": "2026-06-02T14:46:00.893492",
       "error_type": "bad_request",
       "status": "attempted",
       "current_run_status": "unknown",
       "retry_count": 0,
-      "last_attempt_at": "2026-06-01T17:09:12.596369",
+      "last_attempt_at": "2026-06-02T14:46:00.893492",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "All upstream dependencies failed or were skipped"
+    },
+    "08584212159143805199609953959CU17": {
+      "run_id": "08584212159143805199609953959CU17",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-06-02T14:47:21.662308",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-02T14:47:21.662308",
       "auto_fix_attempted": true,
       "auto_fix_success": false,
       "fix_strategy": null,
       "root_cause": "No runAfter dependency succeeded"
     },
-    "08584212310121991022890701040CU08": {
-      "run_id": "08584212310121991022890701040CU08",
-      "workflow_name": "testflow",
-      "attempted_at": "2026-06-02T10:26:47.442080",
-      "error_type": "bad_request",
-      "status": "attempted",
-      "current_run_status": "unknown",
-      "retry_count": 0,
-      "last_attempt_at": "2026-06-02T10:26:47.442080",
-      "auto_fix_attempted": true,
-      "auto_fix_success": false,
-      "fix_strategy": null,
-      "root_cause": "unknown"
-    },
-    "08584212295504675177422130669CU14": {
-      "run_id": "08584212295504675177422130669CU14",
+    "08584212153269967760762302170CU11": {
+      "run_id": "08584212153269967760762302170CU11",
       "workflow_name": "gdrive-logic-app",
-      "attempted_at": "2026-06-02T10:51:53.251459",
+      "attempted_at": "2026-06-02T15:06:29.992078",
       "error_type": "bad_request",
       "status": "attempted",
       "current_run_status": "unknown",
       "retry_count": 0,
-      "last_attempt_at": "2026-06-02T10:51:53.251459",
+      "last_attempt_at": "2026-06-02T15:06:29.992078",
       "auto_fix_attempted": true,
       "auto_fix_success": false,
       "fix_strategy": null,
-      "root_cause": "unknown"
+      "root_cause": "Empty or invalid file path input"
+    },
+    "08584212151965150513982013323CU22": {
+      "run_id": "08584212151965150513982013323CU22",
+      "workflow_name": "Teams-FLOW",
+      "attempted_at": "2026-06-02T14:51:06.253223",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-02T14:51:06.253223",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Typo: HTTP method set to 'posts' instead of POST"
+    },
+    "08584212152444508379225747355CU03": {
+      "run_id": "08584212152444508379225747355CU03",
+      "workflow_name": "testflow",
+      "attempted_at": "2026-06-02T15:03:34.016611",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-02T15:03:34.016611",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "All dependent actions failed/skipped"
+    },
+    "08584212144029594539215046783CU08": {
+      "run_id": "08584212144029594539215046783CU08",
+      "workflow_name": "Teams-FLOW",
+      "attempted_at": "2026-06-02T15:04:51.529486",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-02T15:04:51.529486",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Invalid HTTP method in action configuration"
+    },
+    "08584212149464736074957255150CU31": {
+      "run_id": "08584212149464736074957255150CU31",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-06-02T15:08:34.316392",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-02T15:08:34.316392",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Null or invalid file path input"
     }
   },
   "workflow_states": {
@@ -952,33 +1078,33 @@
     },
     "gdrive-logic-app": {
       "workflow_name": "gdrive-logic-app",
-      "last_fixed_at": "2026-06-02T10:51:53.251459",
-      "last_fixed_run_id": "08584212295504675177422130669CU14",
+      "last_fixed_at": "2026-06-02T15:08:34.316392",
+      "last_fixed_run_id": "08584212149464736074957255150CU31",
       "error_type_fixed": "bad_request",
       "workflow_hash": "",
-      "fix_count": 58,
+      "fix_count": 76,
       "last_fix_strategy": null,
-      "last_root_cause": "unknown"
+      "last_root_cause": "Null or invalid file path input"
     },
     "testflow": {
       "workflow_name": "testflow",
-      "last_fixed_at": "2026-06-02T10:26:47.442080",
-      "last_fixed_run_id": "08584212310121991022890701040CU08",
+      "last_fixed_at": "2026-06-02T15:03:34.016611",
+      "last_fixed_run_id": "08584212152444508379225747355CU03",
       "error_type_fixed": "bad_request",
       "workflow_hash": "",
-      "fix_count": 50,
+      "fix_count": 51,
       "last_fix_strategy": null,
-      "last_root_cause": "unknown"
+      "last_root_cause": "All dependent actions failed/skipped"
     },
     "Teams-FLOW": {
       "workflow_name": "Teams-FLOW",
-      "last_fixed_at": "2026-06-01T16:09:29.274392",
-      "last_fixed_run_id": "08584212968072058556931825535CU09",
+      "last_fixed_at": "2026-06-02T15:04:51.529486",
+      "last_fixed_run_id": "08584212144029594539215046783CU08",
       "error_type_fixed": "bad_request",
       "workflow_hash": "",
-      "fix_count": 13,
+      "fix_count": 16,
       "last_fix_strategy": null,
-      "last_root_cause": "Invalid HTTP method (typo 'posts')"
+      "last_root_cause": "Invalid HTTP method in action configuration"
     },
     "File-upload": {
       "workflow_name": "File-upload",
@@ -992,5 +1118,5 @@
     }
   },
   "workflow_hashes": {},
-  "last_updated": "2026-06-02T10:51:53.251459"
+  "last_updated": "2026-06-02T15:08:34.316392"
 }
