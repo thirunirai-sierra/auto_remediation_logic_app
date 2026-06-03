@@ -10,7 +10,9 @@ import asyncio
 import copy
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+ProgressCallback = Callable[[int, str], None]
 
 from services.auth import get_arm_token
 from config import Settings, get_settings
@@ -72,12 +74,19 @@ class FixerAgent:
             )
         return self._token
 
-    def fix(self, rca_result: Dict[str, Any], workflow_context: Dict[str, Any]) -> Dict[str, Any]:
+    def fix(
+        self,
+        rca_result: Dict[str, Any],
+        workflow_context: Dict[str, Any],
+        on_progress: Optional[ProgressCallback] = None,
+    ) -> Dict[str, Any]:
         """Synchronous entry point for workflow remediation."""
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(self._fix_async(rca_result, workflow_context))
+            result = loop.run_until_complete(
+                self._fix_async(rca_result, workflow_context, on_progress=on_progress)
+            )
             loop.close()
             return result
         except Exception as e:
@@ -93,8 +102,13 @@ class FixerAgent:
         self,
         rca_result: Dict[str, Any],
         workflow_context: Dict[str, Any],
+        on_progress: Optional[ProgressCallback] = None,
     ) -> Dict[str, Any]:
         """Async core remediation pipeline."""
+
+        def _report(step_index: int, label: str) -> None:
+            if on_progress:
+                on_progress(step_index, label)
         workflow_name = workflow_context.get("workflow_name")
         run_id = workflow_context.get("run_id")
         failed_action_name = workflow_context.get("failed_action_name")
@@ -121,6 +135,7 @@ class FixerAgent:
 
         try:
             # Step 1: Fetch workflow
+            _report(1, "Get Workflow — fetching definition from Azure…")
             logger.info("STEP 1: Fetching workflow definition...")
             workflow = await asyncio.to_thread(
                 get_workflow,
@@ -135,6 +150,7 @@ class FixerAgent:
             logger.info("Fetched workflow")
 
             # Step 2: Locate action using shared utility
+            _report(2, "Validate — locating failed action in workflow…")
             logger.info("STEP 2: Locating action in definition...")
             action_path = rem.find_action_path(definition, failed_action_name)
             if not action_path:
@@ -152,6 +168,7 @@ class FixerAgent:
             logger.info(f"   Action type: {action_type}")
 
             # Step 3: Generate fix
+            _report(3, "Patch — generating and applying fix…")
             logger.info("STEP 3: Generating fix...")
             fixed_definition = await self._generate_fix(
                 definition, action_path, action_node,
@@ -169,6 +186,7 @@ class FixerAgent:
             updated_workflow = rem.strip_read_only_for_put(updated_workflow)
 
             # Step 5: Deploy
+            _report(4, "Deploy — publishing workflow to Azure…")
             logger.info("STEP 5: Deploying to Azure...")
             if getattr(self.settings, "DRY_RUN", False):
                 logger.warning("DRY RUN - Skipping deployment")

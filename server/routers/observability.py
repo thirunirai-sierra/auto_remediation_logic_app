@@ -17,6 +17,7 @@ from services.workflow_service import get_workflow
 from services.agents.knowledge.knowledge_base import KnowledgeAgent
 from services.agents.knowledge.embedder import get_embedder
 from utils.llm_client import AICoreLLMClient
+from services.fix_progress import set_progress, get_progress, clear_progress, FIX_STAGES
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -419,7 +420,6 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     from services.agents.observer import Observer
     import json as _json
     import asyncio as _asyncio
-    from services.agents.fixer.Fixer_agent import FixerAgent
 
     client = get_hana_client()
     if not client or not client._ensure_connected():
@@ -581,25 +581,77 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
         "suggested_fix": rca_result["suggested_fix"],
     }
 
-    # Run Fixer
-    def _run_fixer():
-        fixer = FixerAgent(settings)
-        return fixer.fix(rca_result, workflow_context)
+    # Prevent duplicate concurrent apply for same incident
+    cursor = client.conn.cursor()
+    cursor.execute(
+        f"SELECT STATUS FROM {client.full_table} WHERE INCIDENT_ID = ?",
+        (incident_id,),
+    )
+    current_status = (cursor.fetchone() or [None])[0]
+    cursor.close()
+    if current_status == "FIX_IN_PROGRESS":
+        raise HTTPException(409, detail="Fix already in progress for this incident.")
 
-    try:
-        cursor = client.conn.cursor()
-        cursor.execute(
-            f"UPDATE {client.full_table} SET STATUS = 'FIX_IN_PROGRESS', AUTO_FIX_ATTEMPTED = TRUE WHERE INCIDENT_ID = ?",
-            (incident_id,)
+    cursor = client.conn.cursor()
+    cursor.execute(
+        f"UPDATE {client.full_table} SET STATUS = 'FIX_IN_PROGRESS', AUTO_FIX_ATTEMPTED = TRUE WHERE INCIDENT_ID = ?",
+        (incident_id,),
+    )
+    client.conn.commit()
+    cursor.close()
+
+    set_progress(
+        incident_id,
+        status="FIX_IN_PROGRESS",
+        step_index=0,
+        current_step="Submitting fix request…",
+        steps_done=[],
+    )
+
+    _asyncio.create_task(
+        _run_apply_fix_background(
+            incident_id=incident_id,
+            rca_result=rca_result,
+            workflow_context=workflow_context,
         )
-        client.conn.commit()
-        cursor.close()
+    )
 
-        fix_result = await _asyncio.wait_for(
-            _asyncio.to_thread(_run_fixer),
+    return {
+        "status": "FIX_IN_PROGRESS",
+        "incident_id": incident_id,
+        "summary": "Submitting fix request…",
+    }
+
+
+async def _run_apply_fix_background(
+    incident_id: str,
+    rca_result: dict,
+    workflow_context: dict,
+) -> None:
+    """Execute Fixer in background and publish step progress for UI polling."""
+    from services.agents.fixer.Fixer_agent import FixerAgent
+
+    def _on_progress(step_index: int, label: str) -> None:
+        set_progress(
+            incident_id,
+            status="FIX_IN_PROGRESS",
+            step_index=step_index,
+            current_step=label,
+            steps_done=FIX_STAGES[:step_index],
+        )
+
+    fix_result: dict = {"success": False, "error": "Fix did not start."}
+    try:
+        fixer = FixerAgent(settings)
+
+        def _run_fixer():
+            return fixer.fix(rca_result, workflow_context, on_progress=_on_progress)
+
+        fix_result = await asyncio.wait_for(
+            asyncio.to_thread(_run_fixer),
             timeout=180.0,
         )
-    except _asyncio.TimeoutError:
+    except asyncio.TimeoutError:
         logger.error("Fixer timed out for %s", incident_id)
         fix_result = {"success": False, "error": "Fix timed out after 3 minutes."}
     except Exception as exc:
@@ -615,14 +667,24 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
         or ("Fix applied and deployed successfully." if success else "Fix failed — see logs.")
     )
 
-    cursor = client.conn.cursor()
-    cursor.execute(
-        f"UPDATE {client.full_table} SET STATUS = ?, AUTO_FIX_SUCCESS = ?, FIX_STRATEGY = ? WHERE INCIDENT_ID = ?",
-        (new_status, success, summary, incident_id)
+    client = get_hana_client()
+    if client and client._ensure_connected():
+        cursor = client.conn.cursor()
+        cursor.execute(
+            f"UPDATE {client.full_table} SET STATUS = ?, AUTO_FIX_SUCCESS = ?, FIX_STRATEGY = ? WHERE INCIDENT_ID = ?",
+            (new_status, success, summary, incident_id),
+        )
+        client.conn.commit()
+        cursor.close()
+
+    set_progress(
+        incident_id,
+        status=new_status,
+        step_index=len(FIX_STAGES),
+        current_step="Completed" if success else "Failed",
+        steps_done=FIX_STAGES if success else FIX_STAGES[: max(1, get_progress(incident_id).get("step_index", 1) if get_progress(incident_id) else 1)],
+        fix_summary=summary,
     )
-    client.conn.commit()
-    cursor.close()
-    return {"status": new_status, "summary": summary}
 
 
 @router.get("/monitor/fix-status/{incident_id}")
@@ -651,13 +713,35 @@ async def get_fix_status(incident_id: str):
     status, success, fix_summary = row
     cursor.close()
 
-    steps_done = ["Submit", "Get Workflow", "Validate", "Patch", "Deploy"] if success else []
+    live = get_progress(incident_id)
+    if live:
+        return {
+            "status": live.get("status", status),
+            "fix_summary": live.get("fix_summary") or fix_summary,
+            "current_step": live.get("current_step", status),
+            "step_index": live.get("step_index", 0),
+            "total_steps": live.get("total_steps", len(FIX_STAGES)),
+            "steps_done": live.get("steps_done", []),
+        }
+
+    terminal_success = status in ("AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "FIX_DEPLOYED")
+    terminal_fail = status in ("FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME", "PIPELINE_ERROR")
+    if status == "FIX_IN_PROGRESS":
+        return {
+            "status": status,
+            "fix_summary": fix_summary,
+            "current_step": "Fix in progress…",
+            "step_index": 0,
+            "total_steps": len(FIX_STAGES),
+            "steps_done": [],
+        }
+    steps_done = FIX_STAGES if terminal_success else []
     return {
         "status": status,
         "fix_summary": fix_summary,
-        "current_step": "Completed" if success else "Failed",
-        "step_index": 5 if success else 0,
-        "total_steps": 5,
+        "current_step": "Completed" if terminal_success else ("Failed" if terminal_fail else status),
+        "step_index": len(FIX_STAGES) if terminal_success else 0,
+        "total_steps": len(FIX_STAGES),
         "steps_done": steps_done,
     }
 
