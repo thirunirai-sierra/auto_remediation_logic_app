@@ -860,7 +860,7 @@ export default function Observability() {
     try {
       const proposedFix = fixPatch?.summary_structured?.proposed_fix || detail?.ai_recommendation?.proposed_fix || undefined;
       const result = await applyMessageFix(selectedGuid, "user", proposedFix, isForce) as Record<string, unknown>;
-      const incidentId = (result.incident_id as string) || detail?.incident_id || "";
+      const incidentId = (result.incident_id as string) || selectedGuid || detail?.incident_id || "";
 
       const syncStatus = normalizeStatusKey(result.status as string);
       const syncFixApplied = result.fix_applied === true;
@@ -893,8 +893,18 @@ export default function Observability() {
         setFixProgress(null);
         setFixState("success");
         setFixResult((result.summary as string) || "Retry triggered successfully.");
-      } else if (incidentId) {
-        await startFixPolling(incidentId);
+      } else if (
+        syncStatus === "PIPELINE_STARTED" ||
+        syncStatus.startsWith("PIPELINE_") ||
+        incidentId
+      ) {
+        setFixProgress({
+          currentStep: "Pipeline running…",
+          stepIndex: 1,
+          totalSteps: 5,
+          stepsDone: ["Submit"],
+        });
+        await startFixPolling(incidentId || selectedGuid);
       } else {
         setFixProgress(null);
         setFixState("success");

@@ -72,6 +72,18 @@ class Settings(BaseSettings):
     KNOWLEDGE_SKIP_SLOW_URLS: bool = True
     KNOWLEDGE_MICROSOFT_LEARN_URLS: str = ""
 
+    # Event Mesh agent pipeline (5 queues)
+    EVENT_MESH_PIPELINE_ENABLED: bool = True
+    PIPELINE_API_BASE: str = "http://127.0.0.1:8000"
+    EVENT_MESH_PUBLISH_ENABLED: bool = False
+    EVENT_MESH_PUBLISH_URL: Optional[str] = None
+    EVENT_MESH_TOKEN: Optional[str] = None
+    EVENT_MESH_QUEUE_OBSERVER: Optional[str] = None
+    EVENT_MESH_QUEUE_CLASSIFIER: Optional[str] = None
+    EVENT_MESH_QUEUE_RCA: Optional[str] = None
+    EVENT_MESH_QUEUE_FIXER: Optional[str] = None
+    EVENT_MESH_QUEUE_VERIFIER: Optional[str] = None
+
     class Config:
         # Don't load from .env again (we already loaded manually)
         env_file = None
