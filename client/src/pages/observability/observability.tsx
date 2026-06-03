@@ -798,7 +798,9 @@ export default function Observability() {
     let resolved = false;
     for (let i = 0; i < 120; i++) {
       if (pollAbortRef.current.cancelled) break;
-      await new Promise((r) => setTimeout(r, 5000));
+      if (i > 0) {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
       try {
         const s = await fetchFixStatus(incidentId) as Record<string, unknown>;
         const st = normalizeStatusKey(s.status as string);
@@ -806,13 +808,12 @@ export default function Observability() {
         // Update the live step progress from the backend
         setFixProgress({
           currentStep: (s.current_step as string) || st,
-          stepIndex: (s.step_index as number) || 1,
-          totalSteps: (s.total_steps as number) || 4,
+          stepIndex: (s.step_index as number) ?? 0,
+          totalSteps: (s.total_steps as number) || FIX_STAGES.length,
           stepsDone: (s.steps_done as string[]) || [],
         });
-        const stepLabel = ((s.current_step as string) || "").toLowerCase();
-        const stepImpliesDone = stepLabel.includes("complete") || stepLabel.includes("applied and") || stepLabel.includes("deployed successfully");
-        if (TERMINAL_STATUSES.has(st) || stepImpliesDone) {
+        const inProgress = st === "FIX_IN_PROGRESS";
+        if (TERMINAL_STATUSES.has(st) && !inProgress) {
           resolved = true;
           setFixProgress(null);
           if (st === "AWAITING_APPROVAL") {
@@ -830,7 +831,7 @@ export default function Observability() {
           } else if (st === "FIX_DEPLOYED") {
             setFixState("deployed_unverified");
             setFixResult((s.fix_summary as string) || "Fix deployed but XML validation had warnings — verify the workflow manually.");
-          } else if (SUCCESS_STATUSES.has(st) || stepImpliesDone) {
+          } else if (SUCCESS_STATUSES.has(st)) {
             setFixState("success");
             setFixResult((s.fix_summary as string) || "Fix applied and deployed successfully.");
           } else {
@@ -863,8 +864,7 @@ export default function Observability() {
       const incidentId = (result.incident_id as string) || detail?.incident_id || "";
 
       const syncStatus = normalizeStatusKey(result.status as string);
-      const syncFixApplied = result.fix_applied === true;
-      const syncDeploy = result.deploy_success === true;
+      const pollId = (result.incident_id as string) || incidentId || selectedGuid;
       if (syncStatus === "HUMAN_INITIATED_FIX") {
         setFixProgress(null);
         setFixState("skipped");
@@ -873,10 +873,6 @@ export default function Observability() {
         setFixProgress(null);
         setFixState("deployed_unverified");
         setFixResult((result.summary as string) || "Fix deployed but XML validation had warnings — verify the workflow manually.");
-      } else if (SUCCESS_STATUSES.has(syncStatus) || (syncFixApplied && syncDeploy)) {
-        setFixProgress(null);
-        setFixState("success");
-        setFixResult((result.summary as string) || "Fix applied and deployed successfully.");
       } else if (syncStatus === "FIX_FAILED") {
         setFixProgress(null);
         setFixState("error");
@@ -893,8 +889,8 @@ export default function Observability() {
         setFixProgress(null);
         setFixState("success");
         setFixResult((result.summary as string) || "Retry triggered successfully.");
-      } else if (incidentId) {
-        await startFixPolling(incidentId);
+      } else if (pollId) {
+        await startFixPolling(pollId);
       } else {
         setFixProgress(null);
         setFixState("success");
