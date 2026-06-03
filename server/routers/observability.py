@@ -1,4 +1,3 @@
-# server/routers/observability.py
 """
 Observability endpoints for incident tracking and AI‑assisted analysis.
 Uses SAP AI Core LLM and HANA knowledge base for explanations and fix generation.
@@ -9,7 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-
+from services.event_mesh.pipeline import start_pipeline
 from db.hana_client import get_global_client
 from config import get_settings
 from services.auth import get_arm_token
@@ -267,17 +266,19 @@ async def analyze_message(incident_id: str):
     except Exception as e:
         logger.warning("Knowledge base enhancement failed: %s", e)
 
-    cursor = client.conn.cursor()
-    update_sql = f"""
-        UPDATE {client.full_table}
-        SET AI_DIAGNOSIS = ?, AI_PROPOSED_FIX = ?, AI_CONFIDENCE = ?,
-            RCA_ROOT_CAUSE = COALESCE(RCA_ROOT_CAUSE, ?)
-        WHERE INCIDENT_ID = ?
-    """
-    confidence = float(confidence) if confidence is not None else 0.0
-    cursor.execute(update_sql, (diagnosis, proposed_fix, confidence, diagnosis, incident_id))
-    client.conn.commit()
-    cursor.close()
+    # Use the HANA client's upsert method to safely update the record
+    try:
+        client.upsert_observability_record({
+            "incident_id": incident_id,
+            "ai_diagnosis": diagnosis,
+            "ai_proposed_fix": proposed_fix,
+            "ai_confidence": float(confidence),
+            "rca_root_cause": diagnosis,   # fallback if RCA_ROOT_CAUSE is null
+        })
+    except Exception as e:
+        logger.error("Failed to update incident %s: %s", incident_id, e)
+        raise HTTPException(500, f"Database update failed: {e}")
+
     return {"status": "analyzed", "diagnosis": diagnosis, "confidence": confidence}
 
 
@@ -400,26 +401,24 @@ Workflow definition snippet: {json.dumps(definition, default=str)[:2000]}
 @router.post("/monitor/apply-fix/{incident_id}")
 async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     """
-    Apply fix by triggering the orchestrator (if auto‑fix is allowed).
-    Updates status to AUTO_FIXED or FIX_FAILED.
+    Start manual remediation via the Event Mesh agent pipeline (async).
 
-    If the incident record does not contain a failed_action_name, this endpoint
-    will attempt to retrieve it by calling the Observer with the original Azure run_id
-    (stored in the RUN_ID column).
+    Publishes to the observer queue → classifier → rca → fixer → verifier.
+    Returns PIPELINE_STARTED immediately; poll GET /monitor/fix-status/{incident_id}
+    for the final outcome.
 
     Args:
-        incident_id: Incident identifier.
+        incident_id: Incident identifier (ORBLOGICAPPS-…).
         req: Request body (trigger_type, proposed_fix, force).
 
     Returns:
-        dict: New status and summary.
+        dict: PIPELINE_STARTED with correlation_id, or error status.
     """
-    from services.agents.orchestrator import Orchestrator
     from routers.settings import get_error_policy
     from services.agents.observer import Observer
+    from services.event_mesh.pipeline import start_pipeline
     import json as _json
     import asyncio as _asyncio
-    from services.agents.fixer.Fixer_agent import FixerAgent
 
     client = get_hana_client()
     if not client or not client._ensure_connected():
@@ -434,8 +433,17 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     row = cursor.fetchone()
     if not row:
         raise HTTPException(404, "Incident not found")
-    workflow_name, sub_id, error_category, _error_msg, resource_group_db, run_id = row
+    workflow_name, sub_id, error_category, _error_msg, resource_group_db, azure_run_id = row
     cursor.close()
+
+    if not azure_run_id or str(azure_run_id).startswith("ORBLOGICAPPS-"):
+        return {
+            "status": "FIX_FAILED",
+            "summary": (
+                "Cannot start pipeline: incident has no valid Azure RUN_ID. "
+                "Re-ingest the failure from Log Analytics so RUN_ID is populated."
+            ),
+        }
 
     if not workflow_name or str(workflow_name).lower() in ("none", "unknown", ""):
         return {
@@ -522,9 +530,9 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     except Exception:
         pass
 
-    # If still missing, use Observer with the original run_id (stored in RUN_ID column)
-    if not failed_action_name and run_id and not run_id.startswith("ORBLOGICAPPS-"):
-        logger.info("Failed action name missing — calling Observer for run_id=%s", run_id)
+    # Optional pre-check: Observer resolves failed action for logging (pipeline re-runs Observer)
+    if not failed_action_name:
+        logger.info("Failed action name missing — calling Observer for run_id=%s", azure_run_id)
         try:
             observer = Observer(settings)
             obs_result = await _asyncio.to_thread(
@@ -532,97 +540,86 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
                 effective_sub_id,
                 effective_rg,
                 workflow_name,
-                run_id
+                azure_run_id,
             )
             if obs_result.get("status") == "failed_action_found":
                 failed_action_name = obs_result.get("failed_action_name")
                 logger.info("Observer resolved failed_action_name=%s", failed_action_name)
-                # Persist it back to HANA for future use
-                cursor2 = client.conn.cursor()
-                cursor2.execute(
-                    f"UPDATE {client.full_table} SET FAILED_ACTION_NAME = ? WHERE INCIDENT_ID = ?",
-                    (failed_action_name, incident_id)
-                )
-                client.conn.commit()
-                cursor2.close()
             else:
-                logger.warning("Observer could not determine failed action for run_id=%s", run_id)
+                logger.warning(
+                    "Observer could not determine failed action for run_id=%s — pipeline will retry",
+                    azure_run_id,
+                )
         except Exception as e:
             logger.error("Observer call failed for incident %s: %s", incident_id, e)
 
     if not failed_action_name:
-        logger.error("Could not resolve failed_action_name for incident %s", incident_id)
-        return {
-            "status": "FIX_FAILED",
-            "summary": (
-                "The failed action name could not be determined automatically. "
-                "Please review the workflow run history manually and then retry with the correct action name, "
-                "or use the Orchestrator API directly."
-            )
-        }
+        logger.warning(
+            "Could not resolve failed_action_name for incident %s — starting pipeline anyway",
+            incident_id,
+        )
 
-    # Build RCA result and workflow context
-    rca_result = {
-        "root_cause": rca_root_cause,
-        "suggested_fix": ai_proposed_fix or req.proposed_fix or "",
-        "confidence": ai_confidence,
-        "solution": ai_diagnosis,
-        "exact_issue": error_message,
-    }
-
-    workflow_context = {
-        "workflow_name": workflow_name,
-        "run_id": incident_id,
-        "subscription_id": effective_sub_id,
-        "resource_group": effective_rg,
-        "failed_action_name": failed_action_name,
-        "backup_dir": None,
-        "error_type": error_category,
-        "suggested_fix": rca_result["suggested_fix"],
-    }
-
-    # Run Fixer
-    def _run_fixer():
-        fixer = FixerAgent(settings)
-        return fixer.fix(rca_result, workflow_context)
-
+    # Start Event Mesh pipeline (observer → classifier → rca → fixer → verifier)
     try:
         cursor = client.conn.cursor()
         cursor.execute(
-            f"UPDATE {client.full_table} SET STATUS = 'FIX_IN_PROGRESS', AUTO_FIX_ATTEMPTED = TRUE WHERE INCIDENT_ID = ?",
-            (incident_id,)
+            f"UPDATE {client.full_table} SET STATUS = 'PIPELINE_STARTED', AUTO_FIX_ATTEMPTED = TRUE "
+            f"WHERE INCIDENT_ID = ?",
+            (incident_id,),
         )
         client.conn.commit()
         cursor.close()
 
-        fix_result = await _asyncio.wait_for(
-            _asyncio.to_thread(_run_fixer),
-            timeout=180.0,
+        pipeline_result = await start_pipeline(
+            workflow_name=workflow_name,
+            run_id=azure_run_id,
+            subscription_id=effective_sub_id,
+            resource_group=effective_rg,
+            source="manual_fix",
+            incident_id=incident_id,
         )
-    except _asyncio.TimeoutError:
-        logger.error("Fixer timed out for %s", incident_id)
-        fix_result = {"success": False, "error": "Fix timed out after 3 minutes."}
+        logger.info("Pipeline started for incident %s: %s", incident_id, pipeline_result)
+
+        if not pipeline_result.get("started"):
+            reason = pipeline_result.get("reason", "Event Mesh pipeline disabled or failed to publish")
+            cursor = client.conn.cursor()
+            cursor.execute(
+                f"UPDATE {client.full_table} SET STATUS = 'FIX_FAILED', AUTO_FIX_SUCCESS = FALSE "
+                f"WHERE INCIDENT_ID = ?",
+                (incident_id,),
+            )
+            client.conn.commit()
+            cursor.close()
+            return {"status": "FIX_FAILED", "summary": reason, "pipeline": pipeline_result}
+
+        return {
+            "status": "PIPELINE_STARTED",
+            "incident_id": incident_id,
+            "summary": (
+                f"Manual fix initiated via Event Mesh pipeline. "
+                f"Correlation ID: {pipeline_result.get('correlation_id')}. "
+                f"Poll fix-status for the final outcome."
+            ),
+            "failed_action_name": failed_action_name,
+            "azure_run_id": azure_run_id,
+            "pipeline": pipeline_result,
+        }
     except Exception as exc:
-        logger.error("Fixer failed for %s: %s", incident_id, exc, exc_info=True)
-        fix_result = {"success": False, "error": str(exc)}
-
-    success = bool(fix_result.get("success"))
-    new_status = "AUTO_FIXED" if success else "FIX_FAILED"
-    fix_strategy = fix_result.get("fix_strategy") or {}
-    summary = (
-        fix_strategy.get("strategy_description")
-        or fix_result.get("error")
-        or ("Fix applied and deployed successfully." if success else "Fix failed — see logs.")
-    )
-
-    cursor = client.conn.cursor()
-    cursor.execute(
-        f"UPDATE {client.full_table} SET STATUS = ?, AUTO_FIX_SUCCESS = ?, FIX_STRATEGY = ? WHERE INCIDENT_ID = ?",
-        (new_status, success, summary, incident_id)
-    )
-    client.conn.commit()
-    cursor.close()
-    return {"status": new_status, "summary": summary}
+        logger.error("Failed to start pipeline for %s: %s", incident_id, exc, exc_info=True)
+        try:
+            cursor = client.conn.cursor()
+            cursor.execute(
+                f"UPDATE {client.full_table} SET STATUS = 'FIX_FAILED' WHERE INCIDENT_ID = ?",
+                (incident_id,),
+            )
+            client.conn.commit()
+            cursor.close()
+        except Exception:
+            pass
+        return {
+            "status": "FIX_FAILED",
+            "summary": f"Could not start Event Mesh pipeline: {exc}",
+        }
 
 
 @router.get("/monitor/fix-status/{incident_id}")
@@ -651,14 +648,39 @@ async def get_fix_status(incident_id: str):
     status, success, fix_summary = row
     cursor.close()
 
+    status_upper = (status or "").upper()
+    pipeline_progress = {
+        "PIPELINE_STARTED": (1, "Get Workflow", ["Submit"]),
+        "PIPELINE_OBSERVER": (1, "Get Workflow", ["Submit"]),
+        "PIPELINE_CLASSIFIER": (2, "Validate", ["Submit", "Get Workflow"]),
+        "PIPELINE_RCA": (3, "Validate", ["Submit", "Get Workflow", "Validate"]),
+        "PIPELINE_FIXER": (4, "Patch", ["Submit", "Get Workflow", "Validate", "Patch"]),
+        "PIPELINE_VERIFIER": (5, "Deploy", ["Submit", "Get Workflow", "Validate", "Patch", "Deploy"]),
+        "PIPELINE_IN_PROGRESS": (2, "Validate", ["Submit", "Get Workflow"]),
+        "FIX_IN_PROGRESS": (2, "Get Workflow", ["Submit"]),
+    }
+    if status_upper in pipeline_progress:
+        step_index, current_step, steps_done = pipeline_progress[status_upper]
+        return {
+            "status": status,
+            "fix_summary": fix_summary or f"Event Mesh pipeline — {current_step}",
+            "current_step": current_step,
+            "step_index": step_index,
+            "total_steps": 5,
+            "steps_done": steps_done,
+            "pipeline_running": True,
+        }
+
     steps_done = ["Submit", "Get Workflow", "Validate", "Patch", "Deploy"] if success else []
+    terminal = status_upper in ("AUTO_FIXED", "REMEDIATED", "FIX_SUCCEEDED", "FIX_VERIFIED")
     return {
         "status": status,
         "fix_summary": fix_summary,
-        "current_step": "Completed" if success else "Failed",
-        "step_index": 5 if success else 0,
+        "current_step": "Completed" if terminal else ("Failed" if status_upper == "FIX_FAILED" else status),
+        "step_index": 5 if terminal else 0,
         "total_steps": 5,
         "steps_done": steps_done,
+        "pipeline_running": False,
     }
 
 

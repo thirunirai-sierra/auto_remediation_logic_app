@@ -341,6 +341,12 @@ class Orchestrator:
         logger.info("Orchestrator: Starting remediation for %s/%s", workflow_name, run_id)
         logger.info("=" * 80)
 
+        if getattr(self.settings, "EVENT_MESH_PIPELINE_ENABLED", True):
+            from services.event_mesh.pipeline import start_pipeline
+            return await start_pipeline(
+                workflow_name, run_id, subscription_id, resource_group, source="orchestrator"
+            )
+
         # 1. Skip if a newer run succeeded
         if getattr(self.settings, "SKIP_IF_NEWER_RUN_SUCCEEDED", True):
             try:

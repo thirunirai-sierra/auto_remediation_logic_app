@@ -5,6 +5,7 @@ import json
 import logging
 import uuid
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 import uvicorn
@@ -16,7 +17,7 @@ from services.agents.orchestrator import Orchestrator
 from services.workflow_service import get_workflow
 from services.auth import get_arm_token
 from db.hana_client import get_global_client
-from routers.api_ingest import query_log_analytics_range
+from routers.api_ingest import query_log_analytics_range, categorize_error
 from routers import event_mesh as event_mesh_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
@@ -26,126 +27,312 @@ logging.getLogger("azure.identity").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 _shutdown_event = asyncio.Event()
-_monitor_task = None
+_monitor_task   = None
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  In-memory skip cache
+#  Stores run_ids that have already been fully processed in this session so
+#  we never re-process them even if Log Analytics still returns them during
+#  the lookback window.
+#  Structure: { run_id: {"status": str, "processed_at": datetime} }
+# ─────────────────────────────────────────────────────────────────────────────
+_processed_runs: dict[str, dict] = {}
+
+# Statuses that mean "nothing left to do for this run"
+_TERMINAL_STATUSES = {
+    "AUTO_FIXED", "REMEDIATED", "SKIPPED", "FAILED",
+    "FIX_SUCCEEDED", "FIX_ATTEMPTED",
+}
+_IN_FLIGHT_STATUSES = {
+    "PIPELINE_IN_PROGRESS",
+    "PIPELINE_STARTED",
+    "PIPELINE_OBSERVER",
+    "PIPELINE_CLASSIFIER",
+    "PIPELINE_RCA",
+    "PIPELINE_FIXER",
+    "PIPELINE_VERIFIER",
+    "FIX_IN_PROGRESS",
+}
+
+
+def _is_already_processed(run_id: str) -> bool:
+    """
+    Return True if this run_id is in the in-memory cache with a terminal status
+    OR if HANA already has a terminal STATUS for the mapped INCIDENT_ID.
+    """
+    # 1. Fast in-memory check
+    entry = _processed_runs.get(run_id)
+    st_mem = entry.get("status", "").upper() if entry else ""
+    if st_mem in _TERMINAL_STATUSES or st_mem in _IN_FLIGHT_STATUSES:
+        logger.debug("[SKIP] run_id=%s already processed in-memory (status=%s)", run_id, entry["status"])
+        return True
+
+    # 2. HANA persistent check — look up via RUN_INCIDENT_MAP then STATUS column
+    client = get_global_client()
+    if not client:
+        return False
+    try:
+        cursor = client.conn.cursor()
+        # Resolve INCIDENT_ID from map table
+        cursor.execute(
+            f"SELECT INCIDENT_ID FROM {client.map_table} WHERE RUN_ID = ?",
+            (run_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            return False
+
+        incident_id = row[0]
+        cursor.execute(
+            f"SELECT STATUS FROM {client.full_table} WHERE INCIDENT_ID = ?",
+            (incident_id,)
+        )
+        row = cursor.fetchone()
+        cursor.close()
+
+        st = str(row[0]).upper() if row else ""
+        if st in _TERMINAL_STATUSES or st in _IN_FLIGHT_STATUSES:
+            # Populate cache so next cycle is instant
+            _processed_runs[run_id] = {"status": row[0], "processed_at": datetime.now(timezone.utc)}
+            logger.info("[SKIP] run_id=%s already terminal in HANA (status=%s, incident=%s)",
+                        run_id, row[0], incident_id)
+            return True
+    except Exception as e:
+        logger.warning("[SKIP] Could not check HANA status for run_id=%s: %s", run_id, e)
+
+    return False
+
+
+def _mark_processed(run_id: str, status: str) -> None:
+    """Record this run_id in the in-memory cache."""
+    _processed_runs[run_id] = {"status": status.upper(), "processed_at": datetime.now(timezone.utc)}
+
+
+def _extract_subscription_id(resource_id: str) -> str:
+    """Extract subscription ID from Azure resource ID string."""
+    if not resource_id:
+        return ""
+    m = re.search(r"/subscriptions/([^/]+)", resource_id, re.IGNORECASE)
+    return m.group(1) if m else ""
+
+
+def _extract_resource_group(resource_id: str) -> str:
+    """Extract resource group from Azure resource ID string."""
+    if not resource_id:
+        return ""
+    m = re.search(r"/resourceGroups/([^/]+)", resource_id, re.IGNORECASE)
+    return m.group(1) if m else ""
 
 
 async def continuous_monitor(settings):
     """
     Background task that polls Azure Log Analytics for failed Logic App runs,
-    stores incidents in HANA, and optionally triggers remediation based on
-    the ENABLE_AUTO_MONITOR setting.
+    stores incidents in HANA, and optionally triggers remediation.
+
+    Skip logic
+    ----------
+    A run_id is skipped if it already has a terminal STATUS in HANA
+    (AUTO_FIXED, REMEDIATED, SKIPPED, FAILED, FIX_SUCCEEDED, FIX_ATTEMPTED)
+    or if it was processed during this session (in-memory cache).
     """
     logger.info("=" * 80)
     logger.info("Continuous monitor started – polling every 60 seconds")
     logger.info("=" * 80)
     logger.info("Lookback hours: %d", settings.LOOKBACK_HOURS)
 
-    orchestrator = Orchestrator(settings)
+    orchestrator    = Orchestrator(settings)
     auto_fix_enabled = getattr(settings, "ENABLE_AUTO_MONITOR", True)
-    logger.info("Auto‑remediation is %s", "ENABLED" if auto_fix_enabled else "DISABLED (only ingestion)")
+    logger.info("Auto-remediation is %s", "ENABLED" if auto_fix_enabled else "DISABLED (ingestion only)")
 
-    async def process_failure(workflow_name: str, run_id: str, error_msg: str, error_code: str):
+    # ------------------------------------------------------------------
+    async def process_failure(
+        workflow_name: str,
+        run_id: str,
+        error_msg: str,
+        error_code: str,
+        resource_id: str,
+        time_generated,          # datetime | str | None  from Log Analytics
+    ):
         """
-        Store failure in HANA and optionally run remediation.
+        Store failure in HANA with all available fields, then optionally remediate.
         """
         cycle_id = str(uuid.uuid4())[:8]
         logger.info("[MONITOR-%s] Processing failure: %s / %s", cycle_id, workflow_name, run_id)
 
-        # --- Fetch artifact metadata (optional) ---
+        settings_obj = get_settings()
+
+        # ── Derive fields that were previously empty ──────────────────────
+        subscription_id  = (
+            _extract_subscription_id(resource_id)
+            or getattr(settings_obj, "AZURE_SUBSCRIPTION_ID", "") or ""
+        )
+        resource_group   = (
+            _extract_resource_group(resource_id)
+            or getattr(settings_obj, "AZURE_RESOURCE_GROUP", "") or ""
+        )
+        error_category   = categorize_error(error_msg, error_code)
+        error_type       = error_category.lower()  # human-friendly version for ERROR_TYPE column
+
+        # Normalise time_generated to an ISO string
+        if isinstance(time_generated, datetime):
+            event_time_iso = time_generated.isoformat()
+        elif isinstance(time_generated, str) and time_generated:
+            event_time_iso = time_generated
+        else:
+            event_time_iso = datetime.now(timezone.utc).isoformat()
+
+        ingested_at_iso  = datetime.now(timezone.utc).isoformat()
+        # ─────────────────────────────────────────────────────────────────
+
+        # ── Fetch artifact metadata from Azure ───────────────────────────
         artifact_meta = {}
         try:
             token = get_arm_token(
-                settings.AZURE_TENANT_ID,
-                settings.AZURE_CLIENT_ID,
-                settings.AZURE_CLIENT_SECRET
+                settings_obj.AZURE_TENANT_ID,
+                settings_obj.AZURE_CLIENT_ID,
+                settings_obj.AZURE_CLIENT_SECRET,
             )
-            workflow = await asyncio.to_thread(
+            wf_detail = await asyncio.to_thread(
                 get_workflow, token,
-                settings.AZURE_SUBSCRIPTION_ID,
-                settings.AZURE_RESOURCE_GROUP,
-                workflow_name
+                subscription_id or settings_obj.AZURE_SUBSCRIPTION_ID,
+                resource_group  or settings_obj.AZURE_RESOURCE_GROUP,
+                workflow_name,
             )
-            props = workflow.get("properties", {})
+            props = wf_detail.get("properties", {})
             artifact_meta = {
-                "name": workflow.get("name"),
-                "artifact_id": workflow.get("id"),
-                "version": props.get("version"),
-                "package": props.get("package", "default"),
-                "deployed_on": props.get("createdTime"),
-                "deployed_by": "unknown",
-                "runtime_node": workflow.get("location"),
-                "status": props.get("provisioningState"),
+                "name":         wf_detail.get("name"),
+                "artifact_id":  wf_detail.get("id"),
+                "version":      props.get("version"),
+                "package":      props.get("package", "default"),
+                "deployed_on":  props.get("createdTime"),
+                "deployed_by":  "unknown",
+                "runtime_node": wf_detail.get("location"),
+                "status":       props.get("provisioningState"),
             }
         except Exception as e:
             logger.warning("[MONITOR-%s] Failed to fetch artifact meta: %s", cycle_id, e)
 
-        # --- Initial history entry ---
-        initial_history = [{
-            "step": "Detected",
-            "description": "Failure detected from Log Analytics.",
-            "status": "completed",
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }]
+        # ── Initial history entry ─────────────────────────────────────────
+        initial_history = [
+            {
+                "step":        "Detected",
+                "description": "CPI error detected and incident created.",
+                "status":      "completed",
+                "timestamp":   ingested_at_iso,
+            }
+        ]
+
+        # ── Build the full record — no empty fields left behind ───────────
+        initial_record = {
+            # ID fields — run_id goes here; hana_client generates INCIDENT_ID
+            "run_id":           run_id,
+
+            # Core identity
+            "subscription_id":  subscription_id,
+            "resource_group":   resource_group,
+            "workflow_name":    workflow_name,
+
+            # Error detail
+            "error_code":       error_code or "unknown",
+            "error_message":    (error_msg or "")[:2000],
+            "error_category":   error_category,
+            "error_type":       error_type,
+
+            # Status
+            "status":           "DETECTED",
+            "auto_fix_attempted": False,
+            "auto_fix_success":   False,
+            "retry_count":        0,
+
+            # Timestamps
+            "event_time":       event_time_iso,
+            "ingested_at":      ingested_at_iso,
+
+            # Azure resource
+            "resource_id":      resource_id or "",
+
+            # Rich metadata
+            "artifact_json":    json.dumps(artifact_meta) if artifact_meta else None,
+            "history_entries":  json.dumps(initial_history),
+
+            # Observability fields
+            "source_type":           "AzureDiagnostics",
+            "integration_flow_name": workflow_name,
+            "occurrence_count":      1,
+            "last_seen":             ingested_at_iso,
+        }
 
         client = get_global_client()
         if client:
             try:
-                client.upsert_observability_record({
-                    "incident_id": run_id,
-                    "workflow_name": workflow_name,
-                    "error_message": error_msg,
-                    "error_code": error_code,
-                    "status": "DETECTED",
-                    "artifact_json": json.dumps(artifact_meta),
-                    "history_entries": json.dumps(initial_history),
-                })
+                client.upsert_observability_record(initial_record)
+                logger.info("[MONITOR-%s] Initial record stored. run_id=%s", cycle_id, run_id)
             except Exception as e:
-                logger.error("[MONITOR-%s] Failed to insert initial record: %s", cycle_id, e)
+                logger.error("[MONITOR-%s] Failed to store initial record: %s", cycle_id, e)
+        # ─────────────────────────────────────────────────────────────────
 
-        # --- Conditionally run remediation ---
-        if auto_fix_enabled:
-            logger.info("[MONITOR-%s] Auto‑remediation enabled – calling orchestrator", cycle_id)
-            result = await orchestrator.remediate(
-                workflow_name=workflow_name,
-                run_id=run_id,
-                subscription_id=settings.AZURE_SUBSCRIPTION_ID,
-                resource_group=settings.AZURE_RESOURCE_GROUP,
-            )
-            status = result.get("status", "unknown")
-            logger.info("[MONITOR-%s] Remediation result: %s", cycle_id, status)
+        # ── Conditionally run remediation ─────────────────────────────────
+        if not auto_fix_enabled:
+            logger.info("[MONITOR-%s] Auto-remediation disabled – stored only", cycle_id)
+            _mark_processed(run_id, "DETECTED")
+            return {"status": "detected_only"}
 
-            # Update final status
+        sub = subscription_id or settings_obj.AZURE_SUBSCRIPTION_ID
+        rg = resource_group or settings_obj.AZURE_RESOURCE_GROUP
+
+        if getattr(settings_obj, "EVENT_MESH_PIPELINE_ENABLED", True):
+            from services.event_mesh.pipeline import start_pipeline
+
             if client:
-                final_status = "AUTO_FIXED" if status == "remediated" else status.upper()
-                fix_strategy = result.get("fix_strategy")
-                if isinstance(fix_strategy, dict):
-                    fix_strategy = fix_strategy.get("strategy_description", str(fix_strategy))
                 try:
                     client.upsert_observability_record({
-                        "incident_id": run_id,
-                        "status": final_status,
-                        "auto_fix_attempted": True,
-                        "auto_fix_success": (status == "remediated"),
-                        "fix_strategy": fix_strategy,
-                        "rca_root_cause": result.get("root_cause"),
-                        "suggested_fix": result.get("suggested_fix"),
+                        "run_id": run_id,
+                        "status": "PIPELINE_IN_PROGRESS",
                     })
                 except Exception as e:
-                    logger.error("[MONITOR-%s] Failed to update final status: %s", cycle_id, e)
+                    logger.error("[MONITOR-%s] Failed to set pipeline status: %s", cycle_id, e)
 
-            if status == "remediated":
-                logger.info("[MONITOR-%s] SUCCESS: Auto-remediation completed", cycle_id)
+            logger.info("[MONITOR-%s] Starting Event Mesh pipeline (5 queues) …", cycle_id)
+            result = await start_pipeline(workflow_name, run_id, sub, rg, source="monitor")
+            _mark_processed(run_id, "PIPELINE_IN_PROGRESS")
             return result
-        else:
-            logger.info("[MONITOR-%s] Auto‑remediation disabled – incident stored but not fixed", cycle_id)
-            # Optionally mark as DETECTED_NO_AUTO
-            if client:
-                client.upsert_observability_record({
-                    "incident_id": run_id,
-                    "status": "DETECTED",
-                    "auto_fix_attempted": False,
-                })
-            return {"status": "detected_only"}
+
+        logger.info("[MONITOR-%s] Calling orchestrator (inline) …", cycle_id)
+        result = await orchestrator.remediate(
+            workflow_name=workflow_name,
+            run_id=run_id,
+            subscription_id=sub,
+            resource_group=rg,
+        )
+        rem_status = result.get("status", "unknown")
+        logger.info("[MONITOR-%s] Result for %s: %s", cycle_id, run_id, rem_status)
+
+        if client:
+            final_status = "AUTO_FIXED" if rem_status == "remediated" else rem_status.upper()
+            fix_strategy = result.get("fix_strategy")
+            if isinstance(fix_strategy, dict):
+                fix_strategy = fix_strategy.get("strategy_description", str(fix_strategy))
+
+            update_record = {
+                "run_id": run_id,
+                "status": final_status,
+                "auto_fix_attempted": True,
+                "auto_fix_success": (rem_status == "remediated"),
+                "fix_strategy": fix_strategy,
+                "rca_root_cause": result.get("root_cause"),
+            }
+            try:
+                client.upsert_observability_record(update_record)
+            except Exception as e:
+                logger.error("[MONITOR-%s] Failed to update remediation status: %s", cycle_id, e)
+
+        _mark_processed(run_id, "AUTO_FIXED" if rem_status == "remediated" else rem_status.upper())
+
+        if rem_status == "remediated":
+            logger.info("[MONITOR-%s] SUCCESS: Auto-remediation completed", cycle_id)
+        return result
+    # ------------------------------------------------------------------
 
     while not _shutdown_event.is_set():
         try:
@@ -154,56 +341,76 @@ async def continuous_monitor(settings):
                 await asyncio.sleep(60)
                 continue
 
-            end_time = datetime.now(timezone.utc)
+            end_time   = datetime.now(timezone.utc)
             start_time = end_time - timedelta(hours=settings.LOOKBACK_HOURS)
-            logger.info("[MONITOR] Querying Log Analytics from %s to %s", start_time.isoformat(), end_time.isoformat())
+            logger.info("[MONITOR] Querying Log Analytics from %s to %s",
+                        start_time.isoformat(), end_time.isoformat())
+
             rows = await asyncio.to_thread(query_log_analytics_range, start_time, end_time)
 
             if not rows:
-                logger.info("[MONITOR] No new failures found")
+                logger.info("[MONITOR] No failures found")
             else:
                 logger.info("[MONITOR] Found %d failures", len(rows))
-                seen = set()
-                unique_failures = []
+
+                # De-duplicate by (workflow, run_id) and skip already-done runs
+                seen: set[tuple] = set()
+                unique_failures  = []
+
                 for row in rows:
-                    wf = row.get("workflow_name") or row.get("resource_workflowName_s")
-                    rid = row.get("resource_runId_s")
+                    wf  = row.get("workflow_name") or row.get("resource_workflowName_s") or ""
+                    rid = row.get("resource_runId_s") or ""
                     if not wf or not rid:
                         continue
                     key = (wf, rid)
                     if key in seen:
                         continue
                     seen.add(key)
-                    unique_failures.append((wf, rid, row.get("error_message_s", ""), row.get("error_code_s", "")))
 
-                logger.info("[MONITOR] Processing %d unique failures sequentially", len(unique_failures))
+                    # ── SKIP CHECK ──────────────────────────────────────
+                    if _is_already_processed(rid):
+                        logger.info("[MONITOR] SKIP run_id=%s workflow=%s (already terminal)", rid, wf)
+                        continue
+                    # ────────────────────────────────────────────────────
+
+                    unique_failures.append((
+                        wf,
+                        rid,
+                        row.get("error_message_s", ""),
+                        row.get("error_code_s", ""),
+                        row.get("_ResourceId", ""),
+                        row.get("TimeGenerated"),
+                    ))
+
+                logger.info("[MONITOR] Processing %d unique new failures", len(unique_failures))
                 successful = 0
-                failed = 0
+                failed_count = 0
 
-                for i, (wf, rid, err_msg, err_code) in enumerate(unique_failures):
+                for i, (wf, rid, err_msg, err_code, res_id, time_gen) in enumerate(unique_failures):
                     logger.info("[MONITOR] ========================================")
-                    logger.info("[MONITOR] Processing failure %d/%d: %s / %s", i+1, len(unique_failures), wf, rid)
+                    logger.info("[MONITOR] Processing failure %d/%d: %s / %s",
+                                i + 1, len(unique_failures), wf, rid)
                     logger.info("[MONITOR] ========================================")
 
                     try:
-                        result = await process_failure(wf, rid, err_msg, err_code)
+                        result = await process_failure(wf, rid, err_msg, err_code, res_id, time_gen)
                         if isinstance(result, dict) and result.get("status") == "remediated":
                             successful += 1
-                            logger.info("[MONITOR] Task %d completed successfully", i+1)
+                            logger.info("[MONITOR] Task %d completed successfully", i + 1)
                         else:
-                            failed += 1
+                            failed_count += 1
                             logger.info("[MONITOR] Task %d finished with status: %s",
-                                        i+1, result.get("status", "unknown"))
+                                        i + 1, result.get("status", "unknown") if isinstance(result, dict) else result)
                     except Exception as e:
-                        failed += 1
-                        logger.error("[MONITOR] Task %d crashed: %s", i+1, e)
+                        failed_count += 1
+                        logger.error("[MONITOR] Task %d crashed: %s", i + 1, e)
 
                     if i < len(unique_failures) - 1:
-                        logger.info("[MONITOR] Waiting 10 seconds before next failure...")
+                        logger.info("[MONITOR] Waiting 10 seconds before next failure …")
                         await asyncio.sleep(10)
 
                 logger.info("[MONITOR] Cycle complete: %d processed, %d successful, %d failed",
-                            len(unique_failures), successful, failed)
+                            len(unique_failures), successful, failed_count)
 
         except Exception as e:
             logger.error("[MONITOR] Cycle failed: %s", e, exc_info=True)
@@ -222,15 +429,26 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 80)
     settings = get_settings()
 
-    # Always start the monitor for ingestion; auto-fix decision is inside the monitor
     _monitor_task = asyncio.create_task(continuous_monitor(settings))
     logger.info("Background monitor started (ingestion always active)")
 
+    bus = None
+    if getattr(settings, "EVENT_MESH_PIPELINE_ENABLED", True):
+        from services.event_mesh.bus import get_bus
+        from services.event_mesh.pipeline import process_queue_message
+
+        bus = get_bus()
+        await bus.start_workers(process_queue_message)
+        logger.info("Event Mesh pipeline workers started (5 queues)")
+
     yield
+
     logger.info("=" * 80)
-    logger.info("Shutting down API Server...")
+    logger.info("Shutting down API Server and monitor...")
     logger.info("=" * 80)
     _shutdown_event.set()
+    if bus:
+        await bus.stop_workers()
     if _monitor_task:
         _monitor_task.cancel()
         try:
@@ -244,11 +462,17 @@ app = FastAPI(
     version="3.0.0",
     lifespan=lifespan,
 )
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
-app.include_router(api_ingest.router, prefix="/api/ingest", tags=["ingestion"])
-app.include_router(observability.router, prefix="/api", tags=["observability"])
-app.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"])
-app.include_router(workflow.router, prefix="/workflows", tags=["workflows"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.include_router(api_ingest.router,       prefix="/api/ingest",  tags=["ingestion"])
+app.include_router(observability.router,    prefix="/api",         tags=["observability"])
+app.include_router(knowledge.router,        prefix="/knowledge",   tags=["knowledge"])
+app.include_router(workflow.router,         prefix="/workflows",   tags=["workflows"])
 app.include_router(dashboard.router)
 app.include_router(agents.router)
 app.include_router(settings_router.router)
@@ -257,27 +481,17 @@ app.include_router(event_mesh_router.router)
 
 @app.get("/api/monitor/status")
 async def api_monitor_status():
-    """
-    Return the status of the continuous background monitor.
-
-    Returns:
-        dict: Contains:
-            - is_running (bool): True if monitor task is active.
-            - poll_interval_seconds (int): Fixed poll interval (60 seconds).
-    """
+    """Return the status of the continuous background monitor."""
     global _monitor_task
-    is_running = _monitor_task is not None and not _monitor_task.done()
-    return {"is_running": is_running, "poll_interval_seconds": 60}
+    return {
+        "is_running":            _monitor_task is not None and not _monitor_task.done(),
+        "poll_interval_seconds": 60,
+        "cached_processed_runs": len(_processed_runs),
+    }
 
 
 @app.get("/")
 async def root():
-    """
-    Root endpoint returning service information.
-
-    Returns:
-        dict: Service name and version.
-    """
     return {"service": "Logic Apps Auto-Remediation", "version": "3.0.0"}
 
 
