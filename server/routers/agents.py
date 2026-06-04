@@ -16,6 +16,9 @@ from services.agents.knowledge.knowledge_base import KnowledgeAgent
 from services.agents.observer import Observer
 from services.agents.rca.engine import generate_rca
 from services.remediation_tracker import get_tracker
+from services.event_mesh.messages import PipelineEnvelope
+from services.event_mesh.pipeline import run_agent_pipeline_endpoint, start_pipeline
+from services.event_mesh.queues import AGENT_NAMES
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents", tags=["AI Agents"])
@@ -77,11 +80,27 @@ class KnowledgeSearchRequest(BaseModel):
 @router.post("/orchestrator")
 async def orchestrator_remediate(request: RemediateRequest):
     """
-    Execute full remediation workflow for a failed run.
-    Observes -> Classifies -> RCA -> Fixes -> Verifies
+    Start remediation via Event Mesh (5 queues) or run inline when pipeline disabled.
+    Queue chain: observer → classifier → rca → fixer → verifier
     """
-    logger.info(f"Orchestrator: Remediating {request.workflow_name}/{request.run_id}")
-    
+    logger.info("Orchestrator: %s/%s", request.workflow_name, request.run_id)
+
+    if getattr(settings, "EVENT_MESH_PIPELINE_ENABLED", True):
+        result = await start_pipeline(
+            request.workflow_name,
+            request.run_id,
+            request.subscription_id,
+            request.resource_group,
+            source="orchestrator_api",
+        )
+        return {
+            "status": "pipeline_started",
+            "mode": "event_mesh",
+            "workflow_name": request.workflow_name,
+            "run_id": request.run_id,
+            **result,
+        }
+
     orchestrator = Orchestrator(settings)
     result = await orchestrator.remediate(
         workflow_name=request.workflow_name,
@@ -89,7 +108,6 @@ async def orchestrator_remediate(request: RemediateRequest):
         subscription_id=request.subscription_id,
         resource_group=request.resource_group,
     )
-    
     return {
         "status": result.get("status"),
         "workflow_name": result.get("workflow_name"),
@@ -98,7 +116,7 @@ async def orchestrator_remediate(request: RemediateRequest):
         "root_cause": result.get("root_cause"),
         "suggested_fix": result.get("suggested_fix"),
         "fix_applied": result.get("changes_applied") is not None,
-        "message": result.get("error") or "Remediation completed"
+        "message": result.get("error") or "Remediation completed",
     }
 
 
@@ -470,6 +488,34 @@ async def knowledge_stats():
     }
 
 
+# Event Mesh pipeline endpoints (one per agent queue)
+
+@router.post("/observer/pipeline")
+async def observer_pipeline(envelope: PipelineEnvelope):
+    """Process observer step from Event Mesh queue; worker chains to classifier."""
+    return await run_agent_pipeline_endpoint("observer", envelope)
+
+
+@router.post("/classifier/pipeline")
+async def classifier_pipeline(envelope: PipelineEnvelope):
+    return await run_agent_pipeline_endpoint("classifier", envelope)
+
+
+@router.post("/rca/pipeline")
+async def rca_pipeline(envelope: PipelineEnvelope):
+    return await run_agent_pipeline_endpoint("rca", envelope)
+
+
+@router.post("/fixer/pipeline")
+async def fixer_pipeline(envelope: PipelineEnvelope):
+    return await run_agent_pipeline_endpoint("fixer", envelope)
+
+
+@router.post("/verifier/pipeline")
+async def verifier_pipeline(envelope: PipelineEnvelope):
+    return await run_agent_pipeline_endpoint("verifier", envelope)
+
+
 # 8. HEALTH CHECK (All agents)
 
 @router.get("/health")
@@ -505,11 +551,17 @@ async def agents_health():
     agents_status["classifier"] = "healthy"
     agents_status["rca"] = "healthy"
     agents_status["verifier"] = "healthy"
-    
+
+    from services.event_mesh.bus import get_bus
+    from services.event_mesh.queues import queue_definitions
+
     all_healthy = all(v == "healthy" for v in agents_status.values())
-    
+
     return {
         "status": "healthy" if all_healthy else "degraded",
         "agents": agents_status,
-        "timestamp": datetime.now().isoformat()
+        "event_mesh_pipeline": getattr(settings, "EVENT_MESH_PIPELINE_ENABLED", True),
+        "queues": queue_definitions(),
+        "queue_depths": get_bus().queue_depths(),
+        "timestamp": datetime.now().isoformat(),
     }

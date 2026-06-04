@@ -1,20 +1,29 @@
 """
-SAP Event Mesh — HTTP ingest endpoint.
-Receives Logic App failure events pushed by SAP Event Mesh webhook subscription.
+SAP Event Mesh — failure ingest, five agent queues, and pipeline webhooks.
 """
 from __future__ import annotations
 
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from pydantic import BaseModel
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from config import get_settings
 from db.hana_client import get_global_client
 from routers.api_ingest import categorize_error
+from services.event_mesh.bus import get_bus
+from services.event_mesh.messages import PipelineEnvelope
+from services.event_mesh.pipeline import start_pipeline
+from services.event_mesh.queues import (
+    AGENT_NAMES,
+    get_agent_for_queue,
+    get_queue_for_agent,
+    queue_definitions,
+)
 from services.remediation_tracker import get_tracker
 
 logger = logging.getLogger(__name__)
@@ -99,32 +108,129 @@ async def event_mesh_handshake():
     return {"handshake": True}
 
 
+@router.options("/webhook")
+async def event_mesh_webhook_options(
+    request: Request,
+    webhook_request_origin: Optional[str] = Header(None, alias="WebHook-Request-Origin"),
+):
+    """
+    Respond to the Event Mesh handshake OPTIONS request.
+    """
+    response_headers = {
+        "WebHook-Allowed-Origin": webhook_request_origin or "*",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, WebHook-Request-Origin",
+    }
+    return Response(status_code=200, headers=response_headers)
+
+
+def _is_pipeline_envelope(event: Dict[str, Any]) -> bool:
+    """Agent pipeline message (vs raw failure ingest)."""
+    return bool(
+        event.get("workflow_name")
+        and event.get("run_id")
+        and (event.get("correlation_id") or event.get("current_agent"))
+    )
+
+
 @router.post("/webhook")
 async def event_mesh_webhook(
     request: Request,
     x_em_topic: Optional[str] = Header(None, alias="x-em-topic"),
     x_em_queue: Optional[str] = Header(None, alias="x-em-queue"),
 ):
-    """Receive Logic App failure events pushed by SAP Event Mesh."""
+    """
+  Receive events from SAP Event Mesh.
+  - Agent pipeline messages (correlation_id + run_id) → routed to one of 5 agent queues.
+  - Failure ingest payloads → stored in HANA.
+    """
     try:
-        raw  = await request.body()
+        raw = await request.body()
         body = json.loads(raw) if raw else {}
     except Exception as exc:
         raise HTTPException(400, f"Invalid JSON body: {exc}")
 
-    topic  = x_em_topic or x_em_queue or "unknown"
-    logger.info("Event Mesh webhook received from topic=%s", topic)
+    queue_name = x_em_queue or x_em_topic or "unknown"
+    logger.info("Event Mesh webhook queue/topic=%s", queue_name)
 
-    events = body if isinstance(body, list) else [body]
-    stored = sum(1 for e in events if _store(e))
+    events: List[Dict[str, Any]] = body if isinstance(body, list) else [body]
+    bus = get_bus()
+    pipeline_accepted = 0
+    stored = 0
+
+    for event in events:
+        if _is_pipeline_envelope(event):
+            agent = get_agent_for_queue(queue_name) or event.get("current_agent")
+            if not agent or agent not in AGENT_NAMES:
+                agent = event.get("current_agent") or "observer"
+            await bus.deliver_from_webhook(get_queue_for_agent(agent) if agent in AGENT_NAMES else queue_name, event)
+            pipeline_accepted += 1
+        elif _store(event):
+            stored += 1
 
     return {
-        "status":    "ok",
-        "received":  len(events),
-        "stored":    stored,
-        "topic":     topic,
+        "status": "ok",
+        "received": len(events),
+        "pipeline_enqueued": pipeline_accepted,
+        "stored": stored,
+        "queue": queue_name,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+class PipelineStartRequest(BaseModel):
+    workflow_name: str
+    run_id: str
+    subscription_id: str
+    resource_group: str
+
+
+@router.get("/queues")
+async def list_agent_queues():
+    """Five Event Mesh queues — one per agent."""
+    bus = get_bus()
+    return {
+        "count": len(AGENT_NAMES),
+        "pipeline_enabled": getattr(settings, "EVENT_MESH_PIPELINE_ENABLED", True),
+        "queues": queue_definitions(),
+        "local_depths": bus.queue_depths(),
+    }
+
+
+@router.post("/pipeline/start")
+async def pipeline_start(req: PipelineStartRequest):
+    """Start remediation: publish to observer queue → classifier → rca → fixer → verifier."""
+    return await start_pipeline(
+        req.workflow_name,
+        req.run_id,
+        req.subscription_id,
+        req.resource_group,
+        source="api",
+    )
+
+
+@router.post("/consume/{agent}")
+async def consume_agent_queue(agent: str, request: Request):
+    """
+    SAP Event Mesh queue subscription target (per agent).
+    Same as webhook but agent is explicit in the URL path.
+    """
+    if agent not in AGENT_NAMES:
+        raise HTTPException(404, f"Unknown agent. Use one of: {AGENT_NAMES}")
+    try:
+        raw = await request.body()
+        body = json.loads(raw) if raw else {}
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid JSON: {exc}")
+
+    events = body if isinstance(body, list) else [body]
+    bus = get_bus()
+    accepted = 0
+    for event in events:
+        await bus.deliver_from_webhook(get_queue_for_agent(agent), event)
+        accepted += 1
+    return {"accepted": accepted, "agent": agent, "queue": get_queue_for_agent(agent)}
 
 
 @router.post("/ingest")
@@ -163,13 +269,19 @@ async def event_mesh_status():
             cursor.close()
         except Exception as exc:
             logger.warning("event_mesh_status count failed: %s", exc)
+    bus = get_bus()
+    depths = bus.queue_depths()
     return {
         "event_mesh_enabled": True,
-        "hana_connected":     connected,
-        "total_incidents":    total,
+        "pipeline_enabled": getattr(settings, "EVENT_MESH_PIPELINE_ENABLED", True),
+        "hana_connected": connected,
+        "total_incidents": total,
         "messages_retrieved": recent,
-        "queue_depth":        0,
-        "webhook_active":     True,
-        "webhook_url":        "/api/event-mesh/webhook",
-        "ingest_url":         "/api/event-mesh/ingest",
+        "queue_depths": depths,
+        "queue_depth": sum(depths.values()),
+        "webhook_active": True,
+        "webhook_url": "/api/event-mesh/webhook",
+        "ingest_url": "/api/event-mesh/ingest",
+        "pipeline_start": "/api/event-mesh/pipeline/start",
+        "queues_url": "/api/event-mesh/queues",
     }
