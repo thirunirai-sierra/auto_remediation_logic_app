@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any, Dict, Tuple
-
+from monitoring.llm_monitor import log_agent_invoke
 from config import Settings, get_settings
 from services.agents.classifier.analyzer import analyze_error, classify_error
 from services.agents.fixer.Fixer_agent import get_fixer
@@ -206,8 +206,7 @@ RUNNERS = {
     "observer": run_observer,
     "classifier": run_classifier,
     "rca": run_rca,
-    "fixer": run_fixer,
-    "verifier": run_verifier,
+    "fixer": run_fixer
 }
 
 
@@ -248,7 +247,9 @@ async def run_agent_step(agent: str, envelope: PipelineEnvelope) -> PipelineEnve
 
     result, step_status = await runner(envelope, settings)
     setattr(envelope, agent, result)
-
+    # Log successful agent invocation (avoid logging if it was a simple skip)
+    if step_status == "success" and result.get("status") != "skipped":
+        log_agent_invoke(result)
     if step_status == "failed":
         envelope.status = "failed"
         envelope.error = result.get("error") or result.get("reason") or f"{agent} step failed"

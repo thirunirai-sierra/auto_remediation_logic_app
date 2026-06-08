@@ -19,6 +19,7 @@ from services.remediation_tracker import get_tracker
 from services.event_mesh.messages import PipelineEnvelope
 from services.event_mesh.pipeline import run_agent_pipeline_endpoint, start_pipeline
 from services.event_mesh.queues import AGENT_NAMES
+from monitoring.llm_monitor import log_agent_invoke
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents", tags=["AI Agents"])
@@ -108,6 +109,7 @@ async def orchestrator_remediate(request: RemediateRequest):
         subscription_id=request.subscription_id,
         resource_group=request.resource_group,
     )
+    log_agent_invoke(result)
     return {
         "status": result.get("status"),
         "workflow_name": result.get("workflow_name"),
@@ -154,7 +156,7 @@ async def classifier_analyze(request: AnalyzeRequest):
         settings=settings,
         flow_context={"workflow_name": request.workflow_name} if request.workflow_name else None,
     )
-    
+    log_agent_invoke(result)
     return {
         "error_type": result["error_type"],
         "root_cause": result["root_cause"],
@@ -224,7 +226,7 @@ async def fixer_apply(request: FixRequest):
     
     
     result = await asyncio.to_thread(fixer.fix, rca_result, workflow_context)  # ← FIXED
-    
+    log_agent_invoke(result)
     return {
         "success": result.get("success", False),
         "workflow_name": request.workflow_name,
@@ -260,7 +262,7 @@ async def rca_generate(request: RCARequest):
         error_type=request.error_type,
         settings=settings,
     )
-    
+    log_agent_invoke(result)
     return {
         "root_cause": result.get("root_cause", "unknown"),
         "exact_issue": result.get("exact_issue", ""),
@@ -310,7 +312,7 @@ async def observer_analyze(request: ObserveRequest):
         workflow_name=request.workflow_name,
         run_id=request.run_id,
     )
-    
+    log_agent_invoke(result)
     if result.get("status") != "failed_action_found":
         return {
             "status": "failed",
@@ -493,27 +495,37 @@ async def knowledge_stats():
 @router.post("/observer/pipeline")
 async def observer_pipeline(envelope: PipelineEnvelope):
     """Process observer step from Event Mesh queue; worker chains to classifier."""
-    return await run_agent_pipeline_endpoint("observer", envelope)
+    result = await run_agent_pipeline_endpoint("observer", envelope)
+    log_agent_invoke(result)
+    return result
 
 
 @router.post("/classifier/pipeline")
 async def classifier_pipeline(envelope: PipelineEnvelope):
-    return await run_agent_pipeline_endpoint("classifier", envelope)
+    result = await run_agent_pipeline_endpoint("classifier", envelope)
+    log_agent_invoke(result)
+    return result
 
 
 @router.post("/rca/pipeline")
 async def rca_pipeline(envelope: PipelineEnvelope):
-    return await run_agent_pipeline_endpoint("rca", envelope)
+    result = await run_agent_pipeline_endpoint("rca", envelope)
+    log_agent_invoke(result)
+    return result
 
 
 @router.post("/fixer/pipeline")
 async def fixer_pipeline(envelope: PipelineEnvelope):
-    return await run_agent_pipeline_endpoint("fixer", envelope)
+    result = await run_agent_pipeline_endpoint("fixer", envelope)
+    log_agent_invoke(result)
+    return result
 
 
 @router.post("/verifier/pipeline")
 async def verifier_pipeline(envelope: PipelineEnvelope):
-    return await run_agent_pipeline_endpoint("verifier", envelope)
+    result = await run_agent_pipeline_endpoint("verifier", envelope)
+    log_agent_invoke(result)
+    return result
 
 
 # 8. HEALTH CHECK (All agents)

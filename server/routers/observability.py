@@ -229,7 +229,13 @@ async def analyze_message(incident_id: str):
         raise HTTPException(404, "Incident not found")
     workflow_name, error_msg, error_code, _sub_id = row
     cursor.close()
-
+    _cur = client.conn.cursor()
+    _cur.execute(
+        f"UPDATE {client.full_table} SET STATUS = 'ANALYZING' WHERE INCIDENT_ID = ?",
+        (incident_id,)
+    )
+    client.conn.commit()
+    _cur.close()
     llm = AICoreLLMClient.from_env()
     system_prompt = (
         "You are an Azure Logic Apps expert. Analyze the error and provide diagnosis, proposed fix, and confidence (0-1). "
@@ -269,12 +275,13 @@ async def analyze_message(incident_id: str):
     # Use the HANA client's upsert method to safely update the record
     try:
         client.upsert_observability_record({
-            "incident_id": incident_id,
-            "ai_diagnosis": diagnosis,
-            "ai_proposed_fix": proposed_fix,
-            "ai_confidence": float(confidence),
-            "rca_root_cause": diagnosis,   # fallback if RCA_ROOT_CAUSE is null
-        })
+        "incident_id": incident_id,
+        "ai_diagnosis": diagnosis,
+        "ai_proposed_fix": proposed_fix,
+        "ai_confidence": float(confidence),
+        "rca_root_cause": diagnosis,
+        "status": "ANALYZED",          # ← explicit; never falls through to default
+    })
     except Exception as e:
         logger.error("Failed to update incident %s: %s", incident_id, e)
         raise HTTPException(500, f"Database update failed: {e}")
@@ -655,7 +662,6 @@ async def get_fix_status(incident_id: str):
         "PIPELINE_CLASSIFIER": (2, "Validate", ["Submit", "Get Workflow"]),
         "PIPELINE_RCA": (3, "Validate", ["Submit", "Get Workflow", "Validate"]),
         "PIPELINE_FIXER": (4, "Patch", ["Submit", "Get Workflow", "Validate", "Patch"]),
-        "PIPELINE_VERIFIER": (5, "Deploy", ["Submit", "Get Workflow", "Validate", "Patch", "Deploy"]),
         "PIPELINE_IN_PROGRESS": (2, "Validate", ["Submit", "Get Workflow"]),
         "FIX_IN_PROGRESS": (2, "Get Workflow", ["Submit"]),
     }
