@@ -54,8 +54,7 @@ _AGENT_PIPELINE_STATUS = {
     "observer": "PIPELINE_OBSERVER",
     "classifier": "PIPELINE_CLASSIFIER",
     "rca": "PIPELINE_RCA",
-    "fixer": "PIPELINE_FIXER",
-    "verifier": "PIPELINE_VERIFIER",
+    "fixer": "PIPELINE_FIXER"
 }
 
 
@@ -65,14 +64,27 @@ async def _update_pipeline_status(envelope: PipelineEnvelope, status: str) -> No
     if not client:
         return
     try:
-        client.upsert_observability_record({
+        # Preserve error fields from observer so they are never overwritten
+        # by intermediate pipeline status updates.
+        obs = envelope.observer or {}
+        ec = obs.get("error_context") or {}
+        record = {
             "run_id": envelope.run_id,
             "workflow_name": envelope.workflow_name,
             "subscription_id": envelope.subscription_id,
             "resource_group": envelope.resource_group,
             "status": status,
             "auto_fix_attempted": True,
-        })
+        }
+        if ec.get("error_message"):
+            record["error_message"] = ec["error_message"]
+        if ec.get("error_code"):
+            record["error_code"] = ec["error_code"]
+        if obs.get("error_type") or envelope.classifier.get("error_type"):
+            record["error_category"] = (
+                envelope.classifier.get("error_type") or obs.get("error_type", "")
+            )
+        client.upsert_observability_record(record)
     except Exception as exc:
         logger.warning("[PIPELINE] status update failed: %s", exc)
 
@@ -119,7 +131,6 @@ async def _finalize_hana(envelope: PipelineEnvelope) -> None:
     if not client:
         return
     fixer = envelope.fixer or {}
-    verifier = envelope.verifier or {}
     rca = envelope.rca or {}
     fix_ok = bool(fixer.get("success"))
 
@@ -127,12 +138,15 @@ async def _finalize_hana(envelope: PipelineEnvelope) -> None:
         final = "SKIPPED"
     elif envelope.status == "failed" or not fix_ok:
         final = "FIX_FAILED"
-    elif fix_ok and verifier.get("verified"):
-        final = "AUTO_FIXED"
+    
     elif fix_ok:
         final = "AUTO_FIXED"
     else:
         final = envelope.status.upper()
+
+    obs = envelope.observer or {}
+    ec = obs.get("error_context") or {}
+    cls = envelope.classifier or {}
 
     record: Dict[str, Any] = {
         "run_id": envelope.run_id,
@@ -147,6 +161,14 @@ async def _finalize_hana(envelope: PipelineEnvelope) -> None:
         if isinstance(fixer.get("fix_strategy"), dict)
         else fixer.get("fix_strategy"),
     }
+    # Preserve error fields — never let finalization wipe what ingestion stored
+    if ec.get("error_message"):
+        record["error_message"] = ec["error_message"]
+    if ec.get("error_code"):
+        record["error_code"] = ec["error_code"]
+    error_cat = cls.get("error_type") or obs.get("error_type") or ""
+    if error_cat:
+        record["error_category"] = error_cat
     if envelope.incident_id:
         record["incident_id"] = envelope.incident_id
 

@@ -16,9 +16,9 @@ from services.agents.rca.engine import generate_rca
 from services.auth import get_arm_token
 from services.workflow_service import list_runs, get_run, list_run_actions,should_skip_remediate_newer_succeeded 
 from config import Settings, get_settings
-
+from monitoring.llm_monitor import log_agent_invoke
 try:
-    
+    from services.agents.rca.engine import generate_rca
     RCA_AVAILABLE = True
 except ImportError as e:
     logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ except ImportError as e:
     generate_rca = None
 
 try:
+    from services.agents.fixer.Fixer_agent import FixerAgent
     FIXER_AVAILABLE = True
 except ImportError as e:
     logger = logging.getLogger(__name__)
@@ -373,6 +374,7 @@ class Orchestrator:
         # 2. Observe the failed run
         obs_result = self.observer.analyze_failed_run(subscription_id, resource_group, workflow_name, run_id)
         if obs_result["status"] != "failed_action_found":
+            log_agent_invoke(obs_result)
             logger.warning("Observer: %s", obs_result["status"])
             return {
                 "status": obs_result["status"],
@@ -410,6 +412,7 @@ class Orchestrator:
                 error_ctx.get("status_code"),
                 self.settings,
             )
+            log_agent_invoke({"error_type": error_type, "status": "classified"})
 
         logger.info("Classifier final error_type = %s", error_type)
 
@@ -434,6 +437,7 @@ class Orchestrator:
                     generate_rca(obs_result["failed_action"], error_ctx, error_type, self.settings),
                     timeout=180.0,
                 )
+                log_agent_invoke(rca_result)
                 logger.info(
                     "RCA result: root_cause=%s, suggested_fix=%s, confidence=%s",
                     rca_result.get("root_cause", "unknown")[:100],
@@ -494,6 +498,7 @@ class Orchestrator:
 
         try:
             fix_result = await asyncio.to_thread(self.fixer.fix, rca_result, workflow_context)
+            log_agent_invoke(fix_result) 
         except Exception as e:
             logger.error("Fixer failed: %s", e)
             return {

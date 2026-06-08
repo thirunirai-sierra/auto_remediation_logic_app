@@ -27,7 +27,7 @@ class PipelineEnvelope(BaseModel):
     classifier: Dict[str, Any] = Field(default_factory=dict)
     rca: Dict[str, Any] = Field(default_factory=dict)
     fixer: Dict[str, Any] = Field(default_factory=dict)
-    verifier: Dict[str, Any] = Field(default_factory=dict)
+    # verifier: Dict[str, Any] = Field(default_factory=dict)
 
     status: str = "pending"
     error: Optional[str] = None
