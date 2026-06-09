@@ -333,7 +333,10 @@ class Observer:
             return {"status": "no_failed_action", "run_status": run_status}
 
         action_name = full_path.split("/")[-1] if full_path else deepest_action.get("name", "")
-        merged_error = self._merge_error_context(actions, deepest_action, run_error)
+        # Patch the action node name so _merge_error_context can match it
+        deepest_action_normalized = dict(deepest_action)
+        deepest_action_normalized["name"] = action_name
+        merged_error = self._merge_error_context(actions, deepest_action_normalized, run_error)
 
         context = {
             "workflow_name": workflow_name,

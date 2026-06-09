@@ -9,6 +9,8 @@ from config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
+_embedder_instance: Optional["Embedder"] = None
+
 
 class Embedder:
     """Generate embeddings using SAP AI Core (thread‑safe)."""
@@ -70,7 +72,6 @@ class Embedder:
         with ThreadPoolExecutor(max_workers=3) as executor:
             results = list(executor.map(self.embed, texts))
         return results
-    _embedder_instance = None
 
 
 def get_embedder(settings: Optional[Settings] = None) -> Embedder:
