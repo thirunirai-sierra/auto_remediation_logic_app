@@ -1105,6 +1105,62 @@
       "auto_fix_success": false,
       "fix_strategy": null,
       "root_cause": "Invalid or empty file path sent to action"
+    },
+    "08584209720651622871475026881CU01": {
+      "run_id": "08584209720651622871475026881CU01",
+      "workflow_name": "InvoiceProcessorMinimal",
+      "attempted_at": "2026-06-05T10:28:18.388027",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-05T10:28:18.388027",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Invalid For_each items (null/non-array)"
+    },
+    "08584206093198157075649490832CU29": {
+      "run_id": "08584206093198157075649490832CU29",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-06-09T15:28:51.000304",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-09T15:28:51.000304",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "No successful predecessor actions"
+    },
+    "08584206077222586782119020377CU04": {
+      "run_id": "08584206077222586782119020377CU04",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-06-09T15:49:57.135709",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-09T15:49:57.135709",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Run-after dependencies not met"
+    },
+    "08584206064830252897501873643CU25": {
+      "run_id": "08584206064830252897501873643CU25",
+      "workflow_name": "gdrive-logic-app",
+      "attempted_at": "2026-06-09T17:13:49.311394",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-09T17:13:49.311394",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Null first argument to endsWith"
     }
   },
   "workflow_states": {
@@ -1120,13 +1176,13 @@
     },
     "gdrive-logic-app": {
       "workflow_name": "gdrive-logic-app",
-      "last_fixed_at": "2026-06-03T17:03:09.880039",
-      "last_fixed_run_id": "08584211219330213396194138214CU24",
+      "last_fixed_at": "2026-06-09T17:13:49.311394",
+      "last_fixed_run_id": "08584206064830252897501873643CU25",
       "error_type_fixed": "bad_request",
       "workflow_hash": "",
-      "fix_count": 78,
+      "fix_count": 81,
       "last_fix_strategy": null,
-      "last_root_cause": "Null value passed to endsWith function"
+      "last_root_cause": "Null first argument to endsWith"
     },
     "testflow": {
       "workflow_name": "testflow",
@@ -1157,8 +1213,18 @@
       "fix_count": 3,
       "last_fix_strategy": null,
       "last_root_cause": "Selecting 'value' on array output"
+    },
+    "InvoiceProcessorMinimal": {
+      "workflow_name": "InvoiceProcessorMinimal",
+      "last_fixed_at": "2026-06-05T10:28:18.388027",
+      "last_fixed_run_id": "08584209720651622871475026881CU01",
+      "error_type_fixed": "bad_request",
+      "workflow_hash": "",
+      "fix_count": 1,
+      "last_fix_strategy": null,
+      "last_root_cause": "Invalid For_each items (null/non-array)"
     }
   },
   "workflow_hashes": {},
-  "last_updated": "2026-06-03T17:50:30.196145"
+  "last_updated": "2026-06-09T17:13:49.312392"
 }

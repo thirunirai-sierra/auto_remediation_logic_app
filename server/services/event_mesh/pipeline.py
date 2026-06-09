@@ -12,6 +12,7 @@ from services.event_mesh.bus import get_bus
 from services.event_mesh.messages import PipelineEnvelope
 from services.event_mesh.pipeline_runner import run_agent_step
 from services.event_mesh.queues import get_next_agent, get_queue_for_agent
+from services.itsm_service import ensure_ticket_for_incident
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,35 @@ async def _finalize_hana(envelope: PipelineEnvelope) -> None:
         )
     except Exception as exc:
         logger.warning("[PIPELINE] HANA finalize failed: %s", exc)
+        return
+
+    if final in {"FIX_FAILED", "FAILED", "NEEDS_MANUAL_REVIEW"}:
+        try:
+            settings = get_settings()
+            incident_id = envelope.incident_id or client.get_or_create_incident_id(envelope.run_id)
+            ticket_result = ensure_ticket_for_incident(client, incident_id, final, settings)
+            if ticket_result.get("created"):
+                logger.info(
+                    "[PIPELINE] ITSM ticket created incident=%s ticket=%s",
+                    incident_id,
+                    ticket_result.get("ticket_number") or ticket_result.get("ticket_id"),
+                )
+            elif ticket_result.get("existing"):
+                logger.info("[PIPELINE] ITSM ticket already exists for incident=%s", incident_id)
+            elif ticket_result.get("error"):
+                logger.warning(
+                    "[PIPELINE] ITSM ticket creation failed for %s: %s",
+                    incident_id,
+                    ticket_result["error"],
+                )
+            elif ticket_result.get("skipped"):
+                logger.debug(
+                    "[PIPELINE] ITSM ticket skipped for %s: %s",
+                    incident_id,
+                    ticket_result.get("reason"),
+                )
+        except Exception as exc:
+            logger.warning("[PIPELINE] ITSM hook failed for run=%s: %s", envelope.run_id, exc)
 
 
 async def run_agent_pipeline_endpoint(agent: str, envelope: PipelineEnvelope) -> Dict[str, Any]:

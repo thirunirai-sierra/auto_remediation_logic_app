@@ -403,6 +403,10 @@ class HanaClient:
                 ("PROPERTIES_JSON",         "NCLOB"),
                 ("ARTIFACT_JSON",           "NCLOB"),
                 ("ERROR_DETAILS_JSON",      "NCLOB"),
+                ("ITSM_TICKET_ID",          "NVARCHAR(64)"),
+                ("ITSM_TICKET_NUMBER",      "NVARCHAR(64)"),
+                ("ITSM_TICKET_STATE",       "NVARCHAR(64)"),
+                ("ITSM_TICKET_URL",         "NVARCHAR(512)"),
                 ("MESSAGE_GUID",            "NVARCHAR(200)"),
                 ("IFLOW_ID",                "NVARCHAR(500)"),
                 ("SENDER",                  "NVARCHAR(200)"),
@@ -485,6 +489,10 @@ class HanaClient:
                 PROPERTIES_JSON         NCLOB,
                 ARTIFACT_JSON           NCLOB,
                 ERROR_DETAILS_JSON      NCLOB,
+                ITSM_TICKET_ID          NVARCHAR(64),
+                ITSM_TICKET_NUMBER      NVARCHAR(64),
+                ITSM_TICKET_STATE       NVARCHAR(64),
+                ITSM_TICKET_URL         NVARCHAR(512),
                 MESSAGE_GUID            NVARCHAR(200),
                 IFLOW_ID                NVARCHAR(500),
                 SENDER                  NVARCHAR(200),
@@ -582,7 +590,8 @@ class HanaClient:
                     RESOURCE_ID, EVENT_TIME, INGESTED_AT, ERROR_TYPE,
                     AI_DIAGNOSIS, AI_PROPOSED_FIX, AI_CONFIDENCE,
                     AI_FIX_PATCH, FIELD_CHANGES, HISTORY_ENTRIES,
-                    PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON
+                    PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON,
+                    ITSM_TICKET_ID, ITSM_TICKET_NUMBER, ITSM_TICKET_STATE, ITSM_TICKET_URL
                 ) VALUES (
                     ?, ?, ?, ?, ?,
                     ?, ?, ?,
@@ -592,7 +601,8 @@ class HanaClient:
                     ?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?, ?,
-                    ?, ?, ?
+                    ?, ?, ?,
+                    ?, ?, ?, ?
                 )
             """
             cursor.execute(sql, (
@@ -624,6 +634,10 @@ class HanaClient:
                 record.get("properties_json"),
                 record.get("artifact_json"),
                 record.get("error_details_json"),
+                record.get("itsm_ticket_id"),
+                record.get("itsm_ticket_number"),
+                record.get("itsm_ticket_state"),
+                record.get("itsm_ticket_url"),
             ))
             self.conn.commit()
             return True
@@ -658,7 +672,11 @@ class HanaClient:
                     HISTORY_ENTRIES     = COALESCE(?, HISTORY_ENTRIES),
                     PROPERTIES_JSON     = COALESCE(?, PROPERTIES_JSON),
                     ARTIFACT_JSON       = COALESCE(?, ARTIFACT_JSON),
-                    ERROR_DETAILS_JSON  = COALESCE(?, ERROR_DETAILS_JSON)
+                    ERROR_DETAILS_JSON  = COALESCE(?, ERROR_DETAILS_JSON),
+                    ITSM_TICKET_ID       = COALESCE(?, ITSM_TICKET_ID),
+                    ITSM_TICKET_NUMBER   = COALESCE(?, ITSM_TICKET_NUMBER),
+                    ITSM_TICKET_STATE    = COALESCE(?, ITSM_TICKET_STATE),
+                    ITSM_TICKET_URL      = COALESCE(?, ITSM_TICKET_URL)
                 WHERE INCIDENT_ID = ?
             """
             cursor.execute(update_sql, (
@@ -689,6 +707,10 @@ class HanaClient:
                 record.get("properties_json"),
                 record.get("artifact_json"),
                 record.get("error_details_json"),
+                record.get("itsm_ticket_id"),
+                record.get("itsm_ticket_number"),
+                record.get("itsm_ticket_state"),
+                record.get("itsm_ticket_url"),
                 incident_id,
             ))
             self.conn.commit()
@@ -751,6 +773,7 @@ class HanaClient:
                         AI_DIAGNOSIS, AI_PROPOSED_FIX, AI_CONFIDENCE,
                         AI_FIX_PATCH, FIELD_CHANGES, HISTORY_ENTRIES,
                         PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON,
+                        ITSM_TICKET_ID, ITSM_TICKET_NUMBER, ITSM_TICKET_STATE, ITSM_TICKET_URL,
                         LOG_START, LAST_SEEN, OCCURRENCE_COUNT,
                         AFFECTED_COMPONENT, CORRELATION_ID, SOURCE_TYPE,
                         INTEGRATION_FLOW_NAME
@@ -764,6 +787,7 @@ class HanaClient:
                         ?, ?, ?,
                         ?, ?, ?,
                         ?, ?, ?,
+                        ?, ?, ?, ?,
                         ?, ?, ?,
                         ?, ?, ?,
                         ?
@@ -804,6 +828,10 @@ class HanaClient:
                     rec.get("affected_component"),
                     rec.get("correlation_id"),
                     rec.get("source_type", "AzureDiagnostics"),
+                    rec.get("itsm_ticket_id"),
+                    rec.get("itsm_ticket_number"),
+                    rec.get("itsm_ticket_state"),
+                    rec.get("itsm_ticket_url"),
                     rec.get("integration_flow_name"),
                 ))
                 inserted += 1
@@ -844,7 +872,11 @@ class HanaClient:
                         AFFECTED_COMPONENT  = COALESCE(AFFECTED_COMPONENT, ?),
                         CORRELATION_ID      = COALESCE(CORRELATION_ID, ?),
                         SOURCE_TYPE         = COALESCE(SOURCE_TYPE, ?),
-                        INTEGRATION_FLOW_NAME = COALESCE(INTEGRATION_FLOW_NAME, ?)
+                        INTEGRATION_FLOW_NAME = COALESCE(INTEGRATION_FLOW_NAME, ?),
+                        ITSM_TICKET_ID        = COALESCE(ITSM_TICKET_ID, ?),
+                        ITSM_TICKET_NUMBER    = COALESCE(ITSM_TICKET_NUMBER, ?),
+                        ITSM_TICKET_STATE     = COALESCE(ITSM_TICKET_STATE, ?),
+                        ITSM_TICKET_URL       = COALESCE(ITSM_TICKET_URL, ?)
                     WHERE INCIDENT_ID = ?
                 """
                 cursor.execute(update_sql, (
@@ -881,6 +913,10 @@ class HanaClient:
                     rec.get("correlation_id"),
                     rec.get("source_type", "AzureDiagnostics"),
                     rec.get("integration_flow_name"),
+                    rec.get("itsm_ticket_id"),
+                    rec.get("itsm_ticket_number"),
+                    rec.get("itsm_ticket_state"),
+                    rec.get("itsm_ticket_url"),
                     incident_id,
                 ))
                 inserted += 1

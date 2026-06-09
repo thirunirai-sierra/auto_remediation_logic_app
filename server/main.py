@@ -19,6 +19,7 @@ from services.auth import get_arm_token
 from db.hana_client import get_global_client
 from routers.api_ingest import query_log_analytics_range, categorize_error
 from routers import event_mesh as event_mesh_router
+from services.itsm_service import ensure_ticket_for_incident
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger(__name__)
@@ -324,8 +325,11 @@ async def continuous_monitor(settings):
             }
             try:
                 client.upsert_observability_record(update_record)
+                ticket_result = ensure_ticket_for_incident(client, run_id, final_status, settings)
+                if ticket_result.get("error"):
+                    logger.error("Failed to create ITSM ticket for %s: %s", run_id, ticket_result["error"])
             except Exception as e:
-                logger.error("[MONITOR-%s] Failed to update remediation status: %s", cycle_id, e)
+                logger.error("[MONITOR-%s] Failed to update final status: %s", cycle_id, e)
 
         _mark_processed(run_id, "AUTO_FIXED" if rem_status == "remediated" else rem_status.upper())
 

@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     TRACKER_RETENTION_DAYS: int = 90
     TRACKER_MAX_RETRY_COUNT: int = 2
 
+    # ITSM integration
+    ITSM_ENABLED: bool = False
+    ITSM_BASE_URL: Optional[str] = None
+    ITSM_FAKE_USER: Optional[str] = None
+    ITSM_SOURCE: str = "Logic Apps Auto-Remediation"
+
     # Knowledge scraper settings
     KNOWLEDGE_CHUNK_SIZE: int = 1200
     KNOWLEDGE_CHUNK_OVERLAP: int = 50

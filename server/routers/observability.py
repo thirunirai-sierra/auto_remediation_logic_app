@@ -16,6 +16,7 @@ from services.workflow_service import get_workflow
 from services.agents.knowledge.knowledge_base import KnowledgeAgent
 from services.agents.knowledge.embedder import get_embedder
 from utils.llm_client import AICoreLLMClient
+from services.itsm_service import ensure_ticket_for_incident
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -128,7 +129,8 @@ async def get_monitor_message_detail(incident_id: str):
                AUTO_FIX_ATTEMPTED, AUTO_FIX_SUCCESS, RETRY_COUNT,
                AI_DIAGNOSIS, AI_PROPOSED_FIX, AI_CONFIDENCE,
                AI_FIX_PATCH, FIELD_CHANGES, HISTORY_ENTRIES,
-               PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON
+               PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON,
+               ITSM_TICKET_ID, ITSM_TICKET_NUMBER, ITSM_TICKET_STATE, ITSM_TICKET_URL
         FROM {client.full_table}
         WHERE INCIDENT_ID = ?
     """
@@ -199,6 +201,12 @@ async def get_monitor_message_detail(incident_id: str):
         "attachments": [],
         "history": history,
         "incident_status": rec["STATUS"],
+        "ticket": {
+            "id": rec.get("ITSM_TICKET_ID"),
+            "number": rec.get("ITSM_TICKET_NUMBER"),
+            "state": rec.get("ITSM_TICKET_STATE"),
+            "url": rec.get("ITSM_TICKET_URL"),
+        },
         "related_knowledge": related_knowledge,
     }
 
