@@ -14,6 +14,22 @@ if not env_path.exists():
     env_path = Path(__file__).parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
+# Load from manifest.yaml if env vars are missing
+import yaml
+
+manifest_path = Path(__file__).parent.parent / "manifest.yaml"
+
+if manifest_path.exists():
+    with open(manifest_path, "r") as f:
+        manifest = yaml.safe_load(f)
+
+    app = manifest["applications"][0]
+    env_vars = app.get("env", {})
+
+    for key, value in env_vars.items():
+        if not os.getenv(key):
+            os.environ[key] = str(value)
+
 class Settings(BaseSettings):
     # Azure AD (service principal)
     AZURE_TENANT_ID: Optional[str] = None
