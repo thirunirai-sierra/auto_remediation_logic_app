@@ -528,7 +528,7 @@ export default function Observability() {
   const [fixPatch, setFixPatch] = useState<IFixPatchResponse | null>(null);
   const [fixPatchLoading, setFixPatchLoading] = useState(false);
   const [fixPatchError, setFixPatchError] = useState<string | null>(null);
-  const [fixState, setFixState] = useState<"idle" | "loading" | "success" | "error" | "skipped" | "deployed_unverified">("idle");
+  const [fixState, setFixState] = useState<"idle" | "loading" | "success" | "error" | "skipped" | "deployed_unverified"| "ticket_created">("idle");
   const [fixResult, setFixResult] = useState<string>("");
   const [fixProgress, setFixProgress] = useState<{
     currentStep: string; stepIndex: number; totalSteps: number; stepsDone: string[];
@@ -730,6 +730,9 @@ export default function Observability() {
       } else if (["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED"].includes(incStatus)) {
         setFixState("success");
         setFixResult(d.ai_recommendation?.fix_summary || "Fix applied and deployed successfully.");
+      } else if (incStatus === "TICKET_CREATED") {
+        setFixState("ticket_created");
+        setFixResult(d.ai_recommendation?.fix_summary || "Escalated — a ticket has been created for manual review.");
       } else if (["FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME"].includes(incStatus)) {
         setFixState("error");
         setFixResult(d.ai_recommendation?.fix_summary || "Fix failed — see history for details.");
@@ -819,7 +822,7 @@ export default function Observability() {
             setFixState("idle");
             setFixResult((s.fix_summary as string) || "Queued for approval — go to Approvals tab to review.");
           } else if (st === "TICKET_CREATED") {
-            setFixState("idle");
+            setFixState("ticket_created");
             setFixResult((s.fix_summary as string) || "Escalated — a ticket has been created for manual review.");
           } else if (st === "RETRIED") {
             setFixState("success");
@@ -852,6 +855,8 @@ export default function Observability() {
 
   const handleApplyFix = useCallback(async () => {
     if (!selectedGuid) return;
+    const currentStatus = normalizeStatusKey(detail?.incident_status||detail?.status|| "");
+    if (fixState === "ticket_created" || currentStatus === "TICKET_CREATED") return;
     const isForce = true;
     setFixState("loading");
     setFixResult("");
@@ -887,7 +892,7 @@ export default function Observability() {
         setFixResult((result.summary as string) || "Queued for approval — no automated fix applied yet. Go to Approvals to review.");
       } else if (syncStatus === "TICKET_CREATED") {
         setFixProgress(null);
-        setFixState("idle");
+        setFixState("ticket_created");
         setFixResult((result.summary as string) || "Escalated — a ticket has been created for manual review.");
       } else if (syncStatus === "RETRIED") {
         setFixProgress(null);
@@ -933,7 +938,7 @@ export default function Observability() {
         setFixResult(errMsg);
       }
     }
-  }, [selectedGuid, fixPatch, detail, startFixPolling]);
+  }, [selectedGuid, fixPatch, detail, startFixPolling, fixState]);
 
   const handleCheckStatus = useCallback(async () => {
     const incidentId = detail?.incident_id || "";
@@ -947,7 +952,7 @@ export default function Observability() {
 
   useEffect(() => {
     if (!detail) return;
-    const st = normalizeStatusKey(detail.status);
+    const st = normalizeStatusKey(detail.incident_status||detail.status);
     const incidentId = detail.incident_id || "";
     if (fixState !== "idle") return;
 
@@ -966,7 +971,10 @@ export default function Observability() {
     } else if (["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED"].includes(st)) {
       setFixState("success");
       setFixResult(detail.ai_recommendation?.fix_summary || "Fix applied and deployed.");
-    } else if (["FIX_FAILED", "PIPELINE_ERROR"].includes(st)) {
+    } else if (["TICKET_CREATED"].includes(st)) {
+      setFixState("ticket_created");
+      setFixResult(detail.ai_recommendation?.fix_summary || "Escalated — a ticket has been created for manual review.");
+    }else if (["FIX_FAILED", "PIPELINE_ERROR"].includes(st)) {
       setFixState("error");
       setFixResult(detail.ai_recommendation?.fix_summary || "Fix failed.");
     }
@@ -1364,8 +1372,8 @@ export default function Observability() {
                     {fixPatch ? (
                       <>
                         {fixState !== "skipped" && fixState !== "deployed_unverified" && (
-                          <button className={`${styles.applyFixBtn} ${styles[`applyFixBtn_${fixState}`] || ""}`} onClick={handleApplyFix} disabled={fixState === "loading" || fixState === "success"}>
-                            {fixState === "idle" && <><SvgIcon name="lightning" size={13} style={{ marginRight: "0.35rem", verticalAlign: "middle" }} />Apply Fix</>}
+                          <button className={`${styles.applyFixBtn} ${styles[`applyFixBtn_${fixState}`] || ""}`} onClick={handleApplyFix} disabled={fixState === "loading" || fixState === "success" || fixState === "ticket_created"}>
+                            {(fixState === "idle" || fixState === "ticket_created") && <><SvgIcon name="lightning" size={13} style={{ marginRight: "0.35rem", verticalAlign: "middle" }} />Apply Fix</>}
                             {fixState === "loading" && <><span className={styles.btnSpinner} /> Applying...</>}
                             {fixState === "success" && "✓ Fix Applied"}
                             {fixState === "error" && "↺ Retry Fix"}

@@ -352,6 +352,10 @@ class HanaClient:
                 ("PROPERTIES_JSON",         "NCLOB"),
                 ("ARTIFACT_JSON",           "NCLOB"),
                 ("ERROR_DETAILS_JSON",      "NCLOB"),
+                ("ITSM_TICKET_ID",          "NVARCHAR(64)"),
+                ("ITSM_TICKET_NUMBER",      "NVARCHAR(64)"),
+                ("ITSM_TICKET_STATE",       "NVARCHAR(64)"),
+                ("ITSM_TICKET_URL",         "NVARCHAR(512)"),
                 ("MESSAGE_GUID",            "NVARCHAR(200)"),
                 ("IFLOW_ID",                "NVARCHAR(500)"),
                 ("SENDER",                  "NVARCHAR(200)"),
@@ -433,6 +437,10 @@ class HanaClient:
                 PROPERTIES_JSON         NCLOB,
                 ARTIFACT_JSON           NCLOB,
                 ERROR_DETAILS_JSON      NCLOB,
+                ITSM_TICKET_ID          NVARCHAR(64),
+                ITSM_TICKET_NUMBER      NVARCHAR(64),
+                ITSM_TICKET_STATE       NVARCHAR(64),
+                ITSM_TICKET_URL         NVARCHAR(512),
                 MESSAGE_GUID            NVARCHAR(200),
                 IFLOW_ID                NVARCHAR(500),
                 SENDER                  NVARCHAR(200),
@@ -527,7 +535,7 @@ class HanaClient:
             _to_str(record.get("error_code", "unknown")),             # 6  ERROR_CODE
             (_to_str(record.get("error_message")) or "")[:2000],      # 7  ERROR_MESSAGE
             _to_str(record.get("error_category", "UNKNOWN_ERROR")),   # 8  ERROR_CATEGORY
-            _to_str(record.get("status") or "DETECTED"),           # 9  STATUS
+            _to_str(record.get("status") or "DETECTED"),              # 9  STATUS
             (_to_str(record.get("rca_root_cause")) or "")[:4000],     # 10 RCA_ROOT_CAUSE
             (_to_str(record.get("fix_strategy")) or "")[:256],        # 11 FIX_STRATEGY
             now,                                                      # 12 CREATED_AT
@@ -541,13 +549,17 @@ class HanaClient:
             _to_str(record.get("error_type")),                        # 20 ERROR_TYPE
             _to_str(record.get("ai_diagnosis")),                      # 21 AI_DIAGNOSIS
             _to_str(record.get("ai_proposed_fix")),                   # 22 AI_PROPOSED_FIX
-            _to_float(record.get("ai_confidence")),                   # 23 AI_CONFIDENCE  ← DECIMAL
-            _to_str(record.get("ai_fix_patch")),                      # 24 AI_FIX_PATCH   ← was crashing
+            _to_float(record.get("ai_confidence")),                   # 23 AI_CONFIDENCE
+            _to_str(record.get("ai_fix_patch")),                      # 24 AI_FIX_PATCH
             _to_str(record.get("field_changes")),                     # 25 FIELD_CHANGES
             _to_str(record.get("history_entries")),                   # 26 HISTORY_ENTRIES
             _to_str(record.get("properties_json")),                   # 27 PROPERTIES_JSON
             _to_str(record.get("artifact_json")),                     # 28 ARTIFACT_JSON
             _to_str(record.get("error_details_json")),                # 29 ERROR_DETAILS_JSON
+            _to_str(record.get("itsm_ticket_id")),                    # 30 ITSM_TICKET_ID
+            _to_str(record.get("itsm_ticket_number")),                # 31 ITSM_TICKET_NUMBER
+            _to_str(record.get("itsm_ticket_state")),                 # 32 ITSM_TICKET_STATE
+            _to_str(record.get("itsm_ticket_url")),                    # 33 ITSM_TICKET_URL
         )
 
         try:
@@ -561,7 +573,8 @@ class HanaClient:
                     RESOURCE_ID, EVENT_TIME, INGESTED_AT, ERROR_TYPE,
                     AI_DIAGNOSIS, AI_PROPOSED_FIX, AI_CONFIDENCE,
                     AI_FIX_PATCH, FIELD_CHANGES, HISTORY_ENTRIES,
-                    PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON
+                    PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON,
+                    ITSM_TICKET_ID, ITSM_TICKET_NUMBER, ITSM_TICKET_STATE, ITSM_TICKET_URL
                 ) VALUES (
                     ?, ?, ?, ?, ?,
                     ?, ?, ?,
@@ -571,7 +584,8 @@ class HanaClient:
                     ?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?, ?,
-                    ?, ?, ?
+                    ?, ?, ?,
+                    ?, ?, ?, ?
                 )
             """
             cursor.execute(insert_sql, insert_params)
@@ -592,27 +606,31 @@ class HanaClient:
                 (_to_str(record.get("error_message")) or "")[:2000],       # 6  ERROR_MESSAGE
                 _to_str(record.get("error_category", "UNKNOWN_ERROR")),    # 7  ERROR_CATEGORY
                 _status_val,                                               # 8  STATUS CASE WHEN ? IS NOT NULL
-                _status_val,       # 8  STATUS
-                (_to_str(record.get("rca_root_cause")) or "")[:4000],      # 9  RCA_ROOT_CAUSE
-                (_to_str(record.get("fix_strategy")) or "")[:256],         # 10 FIX_STRATEGY
-                now,                                                       # 11 UPDATED_AT
-                _b(record.get("auto_fix_attempted", False)),               # 12 AUTO_FIX_ATTEMPTED
-                _b(record.get("auto_fix_success", False)),                 # 13 AUTO_FIX_SUCCESS
-                record.get("retry_count", 0) or 0,                         # 14 RETRY_COUNT
-                _to_str(record.get("resource_id")),                        # 15 RESOURCE_ID (COALESCE)
-                _to_str(record.get("event_time")),                         # 16 EVENT_TIME (COALESCE)
-                _to_str(record.get("ingested_at")),                        # 17 INGESTED_AT (COALESCE)
-                _to_str(record.get("error_type")),                         # 18 ERROR_TYPE (COALESCE)
-                _to_str(record.get("ai_diagnosis")),                       # 19 AI_DIAGNOSIS (COALESCE)
-                _to_str(record.get("ai_proposed_fix")),                    # 20 AI_PROPOSED_FIX (COALESCE)
-                _to_float(record.get("ai_confidence")),                    # 21 AI_CONFIDENCE (COALESCE) ← DECIMAL
-                _to_str(record.get("ai_fix_patch")),                       # 22 AI_FIX_PATCH (COALESCE)  ← was crashing
-                _to_str(record.get("field_changes")),                      # 23 FIELD_CHANGES (COALESCE)
-                _to_str(record.get("history_entries")),                    # 24 HISTORY_ENTRIES (COALESCE)
-                _to_str(record.get("properties_json")),                    # 25 PROPERTIES_JSON (COALESCE)
-                _to_str(record.get("artifact_json")),                      # 26 ARTIFACT_JSON (COALESCE)
-                _to_str(record.get("error_details_json")),                 # 27 ERROR_DETAILS_JSON (COALESCE)
-                incident_id,                                               # 28 WHERE INCIDENT_ID = ?
+                _status_val,                                               # 9  STATUS CASE ELSE
+                (_to_str(record.get("rca_root_cause")) or "")[:4000],      # 10 RCA_ROOT_CAUSE
+                (_to_str(record.get("fix_strategy")) or "")[:256],         # 11 FIX_STRATEGY
+                now,                                                       # 12 UPDATED_AT
+                _b(record.get("auto_fix_attempted", False)),               # 13 AUTO_FIX_ATTEMPTED
+                _b(record.get("auto_fix_success", False)),                 # 14 AUTO_FIX_SUCCESS
+                record.get("retry_count", 0) or 0,                         # 15 RETRY_COUNT
+                _to_str(record.get("resource_id")),                        # 16 RESOURCE_ID (COALESCE)
+                _to_str(record.get("event_time")),                         # 17 EVENT_TIME (COALESCE)
+                _to_str(record.get("ingested_at")),                        # 18 INGESTED_AT (COALESCE)
+                _to_str(record.get("error_type")),                         # 19 ERROR_TYPE (COALESCE)
+                _to_str(record.get("ai_diagnosis")),                       # 20 AI_DIAGNOSIS (COALESCE)
+                _to_str(record.get("ai_proposed_fix")),                    # 21 AI_PROPOSED_FIX (COALESCE)
+                _to_float(record.get("ai_confidence")),                    # 22 AI_CONFIDENCE (COALESCE)
+                _to_str(record.get("ai_fix_patch")),                       # 23 AI_FIX_PATCH (COALESCE)
+                _to_str(record.get("field_changes")),                      # 24 FIELD_CHANGES (COALESCE)
+                _to_str(record.get("history_entries")),                    # 25 HISTORY_ENTRIES (COALESCE)
+                _to_str(record.get("properties_json")),                    # 26 PROPERTIES_JSON (COALESCE)
+                _to_str(record.get("artifact_json")),                      # 27 ARTIFACT_JSON (COALESCE)
+                _to_str(record.get("error_details_json")),                 # 28 ERROR_DETAILS_JSON (COALESCE)
+                _to_str(record.get("itsm_ticket_id")),                     # 29 ITSM_TICKET_ID (COALESCE)
+                _to_str(record.get("itsm_ticket_number")),                 # 30 ITSM_TICKET_NUMBER (COALESCE)
+                _to_str(record.get("itsm_ticket_state")),                  # 31 ITSM_TICKET_STATE (COALESCE)
+                _to_str(record.get("itsm_ticket_url")),                    # 32 ITSM_TICKET_URL (COALESCE)
+                incident_id,                                               # 33 WHERE INCIDENT_ID = ?
             )
             update_sql = f"""
                 UPDATE {self.full_table}
@@ -642,7 +660,11 @@ class HanaClient:
                     HISTORY_ENTRIES     = COALESCE(?, HISTORY_ENTRIES),
                     PROPERTIES_JSON     = COALESCE(?, PROPERTIES_JSON),
                     ARTIFACT_JSON       = COALESCE(?, ARTIFACT_JSON),
-                    ERROR_DETAILS_JSON  = COALESCE(?, ERROR_DETAILS_JSON)
+                    ERROR_DETAILS_JSON  = COALESCE(?, ERROR_DETAILS_JSON),
+                    ITSM_TICKET_ID      = COALESCE(?, ITSM_TICKET_ID),
+                    ITSM_TICKET_NUMBER  = COALESCE(?, ITSM_TICKET_NUMBER),
+                    ITSM_TICKET_STATE   = COALESCE(?, ITSM_TICKET_STATE),
+                    ITSM_TICKET_URL     = COALESCE(?, ITSM_TICKET_URL)
                 WHERE INCIDENT_ID = ?
             """
             try:
@@ -695,7 +717,7 @@ class HanaClient:
             rec["incident_id"] = incident_id
 
             # ------------------------------------------------------------------
-            # INSERT parameter tuple (36 values — matches 36 columns below)
+            # INSERT parameter tuple (40 values — matches 40 columns below)
             # _to_str() / _to_float() coerce all AI fields so dicts/lists
             # from JSON-parsed responses never reach HANA as wrong types.
             # ------------------------------------------------------------------
@@ -708,7 +730,7 @@ class HanaClient:
                 _to_str(rec.get("error_code", "unknown")),                 # 6  ERROR_CODE
                 (_to_str(rec.get("error_message")) or "")[:2000],          # 7  ERROR_MESSAGE
                 _to_str(rec.get("error_category", "UNKNOWN_ERROR")),       # 8  ERROR_CATEGORY
-                _to_str(rec.get("status") or "DETECTED"),              # 9  STATUS
+                _to_str(rec.get("status") or "DETECTED"),                  # 9  STATUS
                 (_to_str(rec.get("rca_root_cause")) or "")[:4000],         # 10 RCA_ROOT_CAUSE
                 (_to_str(rec.get("fix_strategy")) or "")[:256],            # 11 FIX_STRATEGY
                 rec.get("created_at", now),                                # 12 CREATED_AT
@@ -722,20 +744,24 @@ class HanaClient:
                 _to_str(rec.get("error_type")),                            # 20 ERROR_TYPE
                 _to_str(rec.get("ai_diagnosis")),                          # 21 AI_DIAGNOSIS
                 _to_str(rec.get("ai_proposed_fix")),                       # 22 AI_PROPOSED_FIX
-                _to_float(rec.get("ai_confidence")),                       # 23 AI_CONFIDENCE  ← DECIMAL
-                _to_str(rec.get("ai_fix_patch")),                          # 24 AI_FIX_PATCH   ← was crashing
+                _to_float(rec.get("ai_confidence")),                       # 23 AI_CONFIDENCE
+                _to_str(rec.get("ai_fix_patch")),                          # 24 AI_FIX_PATCH
                 _to_str(rec.get("field_changes")),                         # 25 FIELD_CHANGES
                 _to_str(rec.get("history_entries")),                       # 26 HISTORY_ENTRIES
                 _to_str(rec.get("properties_json")),                       # 27 PROPERTIES_JSON
                 _to_str(rec.get("artifact_json")),                         # 28 ARTIFACT_JSON
                 _to_str(rec.get("error_details_json")),                    # 29 ERROR_DETAILS_JSON
-                _to_str(rec.get("log_start")),                             # 30 LOG_START
-                _to_str(rec.get("last_seen")),                             # 31 LAST_SEEN
-                rec.get("occurrence_count", 1) or 1,                       # 32 OCCURRENCE_COUNT
-                _to_str(rec.get("affected_component")),                    # 33 AFFECTED_COMPONENT
-                _to_str(rec.get("correlation_id")),                        # 34 CORRELATION_ID
-                _to_str(rec.get("source_type", "AzureDiagnostics")),       # 35 SOURCE_TYPE
-                _to_str(rec.get("integration_flow_name")),                 # 36 INTEGRATION_FLOW_NAME
+                _to_str(rec.get("itsm_ticket_id")),                        # 30 ITSM_TICKET_ID
+                _to_str(rec.get("itsm_ticket_number")),                    # 31 ITSM_TICKET_NUMBER
+                _to_str(rec.get("itsm_ticket_state")),                     # 32 ITSM_TICKET_STATE
+                _to_str(rec.get("itsm_ticket_url")),                       # 33 ITSM_TICKET_URL
+                _to_str(rec.get("log_start")),                             # 34 LOG_START
+                _to_str(rec.get("last_seen")),                             # 35 LAST_SEEN
+                rec.get("occurrence_count", 1) or 1,                       # 36 OCCURRENCE_COUNT
+                _to_str(rec.get("affected_component")),                    # 37 AFFECTED_COMPONENT
+                _to_str(rec.get("correlation_id")),                        # 38 CORRELATION_ID
+                _to_str(rec.get("source_type", "AzureDiagnostics")),       # 39 SOURCE_TYPE
+                _to_str(rec.get("integration_flow_name")),                 # 40 INTEGRATION_FLOW_NAME
             )
 
             insert_sql = f"""
@@ -749,6 +775,7 @@ class HanaClient:
                     AI_DIAGNOSIS, AI_PROPOSED_FIX, AI_CONFIDENCE,
                     AI_FIX_PATCH, FIELD_CHANGES, HISTORY_ENTRIES,
                     PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON,
+                    ITSM_TICKET_ID, ITSM_TICKET_NUMBER, ITSM_TICKET_STATE, ITSM_TICKET_URL,
                     LOG_START, LAST_SEEN, OCCURRENCE_COUNT,
                     AFFECTED_COMPONENT, CORRELATION_ID, SOURCE_TYPE,
                     INTEGRATION_FLOW_NAME
@@ -762,6 +789,7 @@ class HanaClient:
                     ?, ?, ?,
                     ?, ?, ?,
                     ?, ?, ?,
+                    ?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?, ?,
                     ?
@@ -775,6 +803,7 @@ class HanaClient:
             except dbapi.IntegrityError:
                 # INCIDENT_ID already exists — UPDATE and bump occurrence count.
                 # Parameter order must exactly match the SET clause below.
+                _status_val = _to_str(rec.get("status"))
                 update_params = (
                     _to_str(run_id),                                           # 1  RUN_ID (COALESCE)
                     _to_str(rec.get("subscription_id")),                       # 2  SUBSCRIPTION_ID
@@ -783,34 +812,38 @@ class HanaClient:
                     _to_str(rec.get("error_code", "unknown")),                 # 5  ERROR_CODE
                     (_to_str(rec.get("error_message")) or "")[:2000],          # 6  ERROR_MESSAGE
                     _to_str(rec.get("error_category", "UNKNOWN_ERROR")),       # 7  ERROR_CATEGORY
-                    _to_str(rec.get("status")),    
-                    _to_str(rec.get("status")), # 8  STATUS
-                    (_to_str(rec.get("rca_root_cause")) or "")[:4000],         # 9  RCA_ROOT_CAUSE
-                    (_to_str(rec.get("fix_strategy")) or "")[:256],            # 10 FIX_STRATEGY
-                    now,                                                       # 11 UPDATED_AT
-                    _b(rec.get("auto_fix_attempted", False)),                  # 12 AUTO_FIX_ATTEMPTED
-                    _b(rec.get("auto_fix_success", False)),                    # 13 AUTO_FIX_SUCCESS
-                    rec.get("retry_count", 0) or 0,                            # 14 RETRY_COUNT
-                    _to_str(rec.get("resource_id")),                           # 15 RESOURCE_ID (COALESCE)
-                    _to_str(rec.get("event_time")),                            # 16 EVENT_TIME (COALESCE)
-                    _to_str(rec.get("ingested_at")),                           # 17 INGESTED_AT (COALESCE)
-                    _to_str(rec.get("error_type")),                            # 18 ERROR_TYPE (COALESCE)
-                    _to_str(rec.get("ai_diagnosis")),                          # 19 AI_DIAGNOSIS (COALESCE)
-                    _to_str(rec.get("ai_proposed_fix")),                       # 20 AI_PROPOSED_FIX (COALESCE)
-                    _to_float(rec.get("ai_confidence")),                       # 21 AI_CONFIDENCE (COALESCE) ← DECIMAL
-                    _to_str(rec.get("ai_fix_patch")),                          # 22 AI_FIX_PATCH (COALESCE)  ← was crashing
-                    _to_str(rec.get("field_changes")),                         # 23 FIELD_CHANGES (COALESCE)
-                    _to_str(rec.get("history_entries")),                       # 24 HISTORY_ENTRIES (COALESCE)
-                    _to_str(rec.get("properties_json")),                       # 25 PROPERTIES_JSON (COALESCE)
-                    _to_str(rec.get("artifact_json")),                         # 26 ARTIFACT_JSON (COALESCE)
-                    _to_str(rec.get("error_details_json")),                    # 27 ERROR_DETAILS_JSON (COALESCE)
-                    _to_str(rec.get("log_start")),                             # 28 LOG_START (COALESCE)
-                    now,                                                       # 29 LAST_SEEN (always update)
-                    _to_str(rec.get("affected_component")),                    # 30 AFFECTED_COMPONENT (COALESCE)
-                    _to_str(rec.get("correlation_id")),                        # 31 CORRELATION_ID (COALESCE)
-                    _to_str(rec.get("source_type", "AzureDiagnostics")),       # 32 SOURCE_TYPE (COALESCE)
-                    _to_str(rec.get("integration_flow_name")),                 # 33 INTEGRATION_FLOW_NAME (COALESCE)
-                    incident_id,                                               # 34 WHERE INCIDENT_ID = ?
+                    _status_val,                                               # 8  STATUS CASE WHEN ? IS NOT NULL
+                    _status_val,                                               # 9  STATUS CASE ELSE
+                    (_to_str(rec.get("rca_root_cause")) or "")[:4000],         # 10 RCA_ROOT_CAUSE
+                    (_to_str(rec.get("fix_strategy")) or "")[:256],            # 11 FIX_STRATEGY
+                    now,                                                       # 12 UPDATED_AT
+                    _b(rec.get("auto_fix_attempted", False)),                  # 13 AUTO_FIX_ATTEMPTED
+                    _b(rec.get("auto_fix_success", False)),                    # 14 AUTO_FIX_SUCCESS
+                    rec.get("retry_count", 0) or 0,                            # 15 RETRY_COUNT
+                    _to_str(rec.get("resource_id")),                           # 16 RESOURCE_ID (COALESCE)
+                    _to_str(rec.get("event_time")),                            # 17 EVENT_TIME (COALESCE)
+                    _to_str(rec.get("ingested_at")),                           # 18 INGESTED_AT (COALESCE)
+                    _to_str(rec.get("error_type")),                            # 19 ERROR_TYPE (COALESCE)
+                    _to_str(rec.get("ai_diagnosis")),                          # 20 AI_DIAGNOSIS (COALESCE)
+                    _to_str(rec.get("ai_proposed_fix")),                       # 21 AI_PROPOSED_FIX (COALESCE)
+                    _to_float(rec.get("ai_confidence")),                       # 22 AI_CONFIDENCE (COALESCE)
+                    _to_str(rec.get("ai_fix_patch")),                          # 23 AI_FIX_PATCH (COALESCE)
+                    _to_str(rec.get("field_changes")),                         # 24 FIELD_CHANGES (COALESCE)
+                    _to_str(rec.get("history_entries")),                       # 25 HISTORY_ENTRIES (COALESCE)
+                    _to_str(rec.get("properties_json")),                       # 26 PROPERTIES_JSON (COALESCE)
+                    _to_str(rec.get("artifact_json")),                         # 27 ARTIFACT_JSON (COALESCE)
+                    _to_str(rec.get("error_details_json")),                    # 28 ERROR_DETAILS_JSON (COALESCE)
+                    _to_str(rec.get("log_start")),                             # 29 LOG_START (COALESCE)
+                    now,                                                       # 30 LAST_SEEN (always update)
+                    _to_str(rec.get("affected_component")),                    # 31 AFFECTED_COMPONENT (COALESCE)
+                    _to_str(rec.get("correlation_id")),                        # 32 CORRELATION_ID (COALESCE)
+                    _to_str(rec.get("source_type", "AzureDiagnostics")),       # 33 SOURCE_TYPE (COALESCE)
+                    _to_str(rec.get("integration_flow_name")),                 # 34 INTEGRATION_FLOW_NAME (COALESCE)
+                    _to_str(rec.get("itsm_ticket_id")),                        # 35 ITSM_TICKET_ID (COALESCE)
+                    _to_str(rec.get("itsm_ticket_number")),                    # 36 ITSM_TICKET_NUMBER (COALESCE)
+                    _to_str(rec.get("itsm_ticket_state")),                     # 37 ITSM_TICKET_STATE (COALESCE)
+                    _to_str(rec.get("itsm_ticket_url")),                       # 38 ITSM_TICKET_URL (COALESCE)
+                    incident_id,                                               # 39 WHERE INCIDENT_ID = ?
                 )
                 update_sql = f"""
                     UPDATE {self.full_table}
@@ -821,7 +854,7 @@ class HanaClient:
                         ERROR_CODE            = ?,
                         ERROR_MESSAGE         = ?,
                         ERROR_CATEGORY        = ?,
-                        STATUS                = CASE WHEN ? IS NOT NULL THEN ? ELSE STATUS END, 
+                        STATUS                = CASE WHEN ? IS NOT NULL THEN ? ELSE STATUS END,
                         RCA_ROOT_CAUSE        = ?,
                         FIX_STRATEGY          = ?,
                         UPDATED_AT            = ?,
@@ -847,7 +880,11 @@ class HanaClient:
                         AFFECTED_COMPONENT    = COALESCE(AFFECTED_COMPONENT, ?),
                         CORRELATION_ID        = COALESCE(CORRELATION_ID, ?),
                         SOURCE_TYPE           = COALESCE(SOURCE_TYPE, ?),
-                        INTEGRATION_FLOW_NAME = COALESCE(INTEGRATION_FLOW_NAME, ?)
+                        INTEGRATION_FLOW_NAME = COALESCE(INTEGRATION_FLOW_NAME, ?),
+                        ITSM_TICKET_ID        = COALESCE(ITSM_TICKET_ID, ?),
+                        ITSM_TICKET_NUMBER    = COALESCE(ITSM_TICKET_NUMBER, ?),
+                        ITSM_TICKET_STATE     = COALESCE(ITSM_TICKET_STATE, ?),
+                        ITSM_TICKET_URL       = COALESCE(ITSM_TICKET_URL, ?)
                     WHERE INCIDENT_ID = ?
                 """
                 try:
