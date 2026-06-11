@@ -44,7 +44,7 @@ export default defineConfig({
       },
       // User API (if needed)
       "/user-api": {
-        target: "http://localhost:8000",
+        target: "http://localhost:8080",
         changeOrigin: true,
       },
     },
