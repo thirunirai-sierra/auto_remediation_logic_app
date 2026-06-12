@@ -391,8 +391,33 @@ export async function fetchPipelineTrace(limit = 20): Promise<{ incidents: unkno
 }
 
 // ----------------------------------------------------------------------
-// Tickets and Approvals (stubs)
+// Tickets and Approvals
 // ----------------------------------------------------------------------
+
+/** Single row from GET /api/approvals/pending. */
+export interface PendingApproval {
+  incident_id: string;
+  iflow_id: string;
+  error_type: string;
+  error_message: string;
+  root_cause: string;
+  proposed_fix: string;
+  rca_confidence: number;
+  status: string;
+  created_at: string | null;
+  pending_since: string | null;
+  message_guid: string;
+}
+
+export interface ApprovalActionResponse {
+  status: string;
+  incident_id: string;
+  approved_at?: string;
+  rejected_at?: string;
+  comment?: string;
+  reason?: string;
+  fix?: Record<string, unknown>;
+}
 
 /**
 * Lists support tickets from logging service.
@@ -420,27 +445,41 @@ export async function updateTicket(
 
 /**
 * Fetches incidents awaiting operator approval.
-* @returns {Promise<{ pending: unknown[] }>} Pending approval rows.
+* @returns {Promise<{ pending: PendingApproval[] }>} Pending approval rows.
 */
-export async function fetchPendingApprovals(): Promise<{ pending: unknown[] }> {
+export async function fetchPendingApprovals(): Promise<{ pending: PendingApproval[] }> {
   return request(`${LOG_API_BASE}/api/approvals/pending`);
 }
 
 /**
-* Submits approve/reject decision for an incident remediation.
+* Approves a pending incident remediation and triggers fix application.
 * @param {string} incidentId - Incident id.
-* @param {boolean} approved - True to approve, false to reject.
 * @param {string} [comment=""] - Optional reviewer comment.
-* @returns {Promise<unknown>} Backend acknowledgment payload.
+* @returns {Promise<ApprovalActionResponse>} Backend acknowledgment payload.
 */
 export async function approveIncident(
   incidentId: string,
-  approved: boolean,
   comment = ""
-): Promise<unknown> {
-  return request(`${LOG_API_BASE}/api/approvals/${incidentId}/approve`, {
+): Promise<ApprovalActionResponse> {
+  return request(`${LOG_API_BASE}/api/approvals/${encodeURIComponent(incidentId)}/approve`, {
     method: "POST",
-    body: JSON.stringify({ approved, comment }),
+    body: JSON.stringify({ comment }),
+  });
+}
+
+/**
+* Rejects a pending incident remediation.
+* @param {string} incidentId - Incident id.
+* @param {string} [reason=""] - Optional rejection reason.
+* @returns {Promise<ApprovalActionResponse>} Backend acknowledgment payload.
+*/
+export async function rejectIncident(
+  incidentId: string,
+  reason = ""
+): Promise<ApprovalActionResponse> {
+  return request(`${LOG_API_BASE}/api/approvals/${encodeURIComponent(incidentId)}/reject`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
   });
 }
 
