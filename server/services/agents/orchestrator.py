@@ -543,7 +543,8 @@ class Orchestrator:
             "run_id": run_id,
             "error_type": error_type,
             "root_cause": rca_result.get("root_cause"),
+            "exact_issue": rca_result.get("exact_issue"),
             "suggested_fix": rca_result.get("suggested_fix"),
             "fix_strategy": fix_result.get("fix_strategy"),
-            "changes_applied": fix_result.get("changes_applied")
+            "changes_applied": fix_result.get("changes_applied"),
         }

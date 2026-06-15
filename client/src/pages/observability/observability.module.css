@@ -1828,15 +1828,37 @@
   line-height: 1.5;
 }
 
-.approvalActions {
+.approvalFooter {
   display: flex;
-  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
   padding-top: 0.875rem;
   border-top: 1px solid var(--orbit-gray-100, #f3f4f6);
 }
 
-.btn {
+.approvalFooter .approvalMeta {
+  margin-bottom: 0;
   flex: 1;
+  min-width: 0;
+}
+
+.approvalActions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.approvalActions .btn {
+  flex: 0 0 auto;
+  min-width: 6.5rem;
+  padding: 0.5rem 1.25rem;
+}
+
+.btn {
   padding: 0.75rem 1.5rem;
   border: none;
   border-radius: 0.375rem;
@@ -1953,6 +1975,44 @@
   padding: 0.1rem 0.25rem;
 }
 .approvalErrorBanner button:hover { opacity: 1; }
+
+.approvalToast {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.625rem 1rem;
+  margin-bottom: 1rem;
+  border-radius: 0.5rem;
+  font-size: 0.825rem;
+  font-weight: 500;
+}
+
+.approvalToastSuccess {
+  background: #dcfce7;
+  border: 1px solid #bbf7d0;
+  border-left: 4px solid #16a34a;
+  color: #15803d;
+}
+
+.approvalToastError {
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+  border-left: 4px solid #dc2626;
+  color: #b91c1c;
+}
+
+.approvalToast button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  opacity: 0.7;
+  flex-shrink: 0;
+  padding: 0.1rem 0.25rem;
+}
+
+.approvalToast button:hover { opacity: 1; }
 
 /* ── Error Type Guide Panel ──────────────────────────────────── */
 .errorGuide {

@@ -4,7 +4,8 @@ Uses SAP AI Core LLM and HANA knowledge base for explanations and fix generation
 """
 
 import json,logging,asyncio
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -32,8 +33,147 @@ class UpdateTicketRequest(BaseModel):
     resolution_notes: Optional[str] = None
 
 class ApproveIncidentRequest(BaseModel):
-    approved: bool
     comment: Optional[str] = None
+
+
+class RejectIncidentRequest(BaseModel):
+    comment: Optional[str] = None
+    reason: Optional[str] = None
+
+_PIPELINE_IN_FLIGHT_STATUSES = (
+    "PIPELINE_IN_PROGRESS", "PIPELINE_STARTED", "PIPELINE_OBSERVER",
+    "PIPELINE_CLASSIFIER", "PIPELINE_RCA", "PIPELINE_FIXER", "PIPELINE_VERIFIER",
+    "FIX_IN_PROGRESS",
+)
+# Broad set (pipeline guards, etc.)
+_IN_PROGRESS_STATUSES = _PIPELINE_IN_FLIGHT_STATUSES + (
+    "RCA_IN_PROGRESS", "FIX_ATTEMPTED", "CLASSIFIED", "RCA_COMPLETE",
+    "FIX_APPLIED_PENDING_VERIFICATION", "PROCESSING", "ANALYZING", "APPROVED",
+)
+# KPI/list: only statuses that mean a fix is actively running, updated recently.
+_ACTIVE_PROCESSING_STATUSES = _PIPELINE_IN_FLIGHT_STATUSES + (
+    "RCA_IN_PROGRESS", "FIX_APPLIED_PENDING_VERIFICATION", "ANALYZING", "APPROVED",
+)
+_PROCESSING_STALE_MINUTES = 30
+_FAILED_STATUSES = frozenset({
+    "FAILED", "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME",
+    "RCA_FAILED", "PIPELINE_ERROR", "DETECTED", "ARTIFACT_MISSING", "REJECTED",
+})
+_SUCCESS_STATUSES = frozenset({
+    "AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "SUCCESS",
+    "HUMAN_INITIATED_FIX", "FIX_DEPLOYED",
+})
+_RETRY_STATUSES = frozenset({
+    "RETRY", "PENDING_APPROVAL", "TICKET_CREATED", "AWAITING_APPROVAL",
+})
+
+
+def _normalize_status_key(status: Optional[str]) -> str:
+    return (status or "").strip().upper().replace(" ", "_")
+
+
+def _is_processing_status_key(status_key: str) -> bool:
+    return status_key in _IN_PROGRESS_STATUSES or (
+        status_key.startswith("PIPELINE_") and status_key != "PIPELINE_ERROR"
+    )
+
+
+def _status_in_set_sql(statuses: tuple) -> str:
+    placeholders = ", ".join("?" for _ in statuses)
+    return f"REPLACE(UPPER(TRIM(STATUS)), ' ', '_') IN ({placeholders})"
+
+
+def _active_processing_params() -> tuple[list, int]:
+    return list(_ACTIVE_PROCESSING_STATUSES), -_PROCESSING_STALE_MINUTES * 60
+
+
+def _active_processing_predicate() -> str:
+    """SQL fragment: in-flight status AND updated within the stale window."""
+    return (
+        f"(({_status_in_set_sql(_ACTIVE_PROCESSING_STATUSES)} OR "
+        f"(REPLACE(UPPER(TRIM(STATUS)), ' ', '_') LIKE 'PIPELINE_%' "
+        f"AND REPLACE(UPPER(TRIM(STATUS)), ' ', '_') <> 'PIPELINE_ERROR')) "
+        f"AND UPDATED_AT >= ADD_SECONDS(CURRENT_TIMESTAMP, ?))"
+    )
+
+
+def _count_active_processing(client) -> int:
+    statuses, stale_seconds = _active_processing_params()
+    cursor = client.conn.cursor()
+    cursor.execute(
+        f"SELECT COUNT(*) FROM {client.full_table} WHERE {_active_processing_predicate()}",
+        (*statuses, stale_seconds),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    return int(row[0] or 0) if row else 0
+
+
+def _build_status_group_filter(status_group: str) -> tuple[str, list]:
+    """Map summary-bucket names (FAILED, PROCESSING, …) to a SQL predicate."""
+    groups = [g.strip().upper() for g in status_group.split(",") if g.strip()]
+    if not groups:
+        return "", []
+
+    parts: list[str] = []
+    params: list = []
+
+    for group in groups:
+        if group == "PROCESSING":
+            parts.append(_active_processing_predicate())
+            statuses, stale_seconds = _active_processing_params()
+            params.extend(statuses)
+            params.append(stale_seconds)
+        elif group == "FAILED":
+            parts.append(f"({_status_in_set_sql(tuple(_FAILED_STATUSES))})")
+            params.extend(_FAILED_STATUSES)
+        elif group == "SUCCESS":
+            parts.append(f"({_status_in_set_sql(tuple(_SUCCESS_STATUSES))})")
+            params.extend(_SUCCESS_STATUSES)
+        elif group == "RETRY":
+            parts.append(f"({_status_in_set_sql(tuple(_RETRY_STATUSES))})")
+            params.extend(_RETRY_STATUSES)
+        else:
+            parts.append("REPLACE(UPPER(TRIM(STATUS)), ' ', '_') = ?")
+            params.append(group)
+
+    return f"({' OR '.join(parts)})", params
+
+
+def _format_root_cause_for_display(rec: dict) -> Optional[str]:
+    """Best available RCA text for list/trace views."""
+    for key in ("RCA_ROOT_CAUSE", "AI_DIAGNOSIS"):
+        val = rec.get(key)
+        if val and str(val).strip():
+            return str(val).strip()
+    err = rec.get("ERROR_MESSAGE")
+    if err and str(err).strip():
+        return str(err).strip()[:2000]
+    return None
+
+
+def _compute_status_summary(client) -> dict:
+    """Aggregate incident counts into Observability/Dashboard KPI buckets."""
+    cursor = client.conn.cursor()
+    cursor.execute(f"SELECT STATUS, COUNT(*) FROM {client.full_table} GROUP BY STATUS")
+    rows = cursor.fetchall()
+    cursor.close()
+
+    buckets = {"FAILED": 0, "SUCCESS": 0, "PROCESSING": 0, "RETRY": 0, "pending_approval": 0}
+    for status, count in rows:
+        st = _normalize_status_key(status)
+        n = int(count or 0)
+        if st in _FAILED_STATUSES:
+            buckets["FAILED"] += n
+        elif st in _SUCCESS_STATUSES:
+            buckets["SUCCESS"] += n
+        elif st in _RETRY_STATUSES:
+            buckets["RETRY"] += n
+        if st == "AWAITING_APPROVAL":
+            buckets["pending_approval"] += n
+    buckets["PROCESSING"] = _count_active_processing(client)
+    return buckets
+
 
 def get_hana_client():
     """Return the singleton HANA client."""
@@ -46,6 +186,10 @@ async def get_monitor_messages(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     status: Optional[str] = Query(None),
+    status_group: Optional[str] = Query(
+        None,
+        description="Comma-separated summary buckets: FAILED, SUCCESS, PROCESSING, RETRY",
+    ),
     search: Optional[str] = Query(None),
 ):
     """
@@ -54,11 +198,12 @@ async def get_monitor_messages(
     Args:
         limit: Max number of records to return.
         offset: Number of records to skip.
-        status: Filter by status (case‑insensitive).
-        search: Search in workflow name or error message.
+        status: Filter by exact status (case‑insensitive).
+        status_group: Filter by KPI bucket(s) using the same rules as summary cards.
+        search: Search workflow name, incident id, or error message.
 
     Returns:
-        dict: Contains 'messages' list and 'total' count.
+        dict: Contains 'messages' list, 'total' count, and 'summary' KPI buckets.
     """
     client = get_hana_client()
     if not client or not client._ensure_connected():
@@ -67,11 +212,17 @@ async def get_monitor_messages(
     cursor = client.conn.cursor()
     conditions = []
     params = []
-    if status and status.upper() != "ALL":
-        conditions.append("UPPER(STATUS) = ?")
-        params.append(status.upper())
+    if status_group:
+        group_clause, group_params = _build_status_group_filter(status_group)
+        if group_clause:
+            conditions.append(group_clause)
+            params.extend(group_params)
+    elif status and status.upper() != "ALL":
+        conditions.append("REPLACE(UPPER(TRIM(STATUS)), ' ', '_') = ?")
+        params.append(_normalize_status_key(status))
     if search:
-        conditions.append("(WORKFLOW_NAME LIKE ? OR ERROR_MESSAGE LIKE ?)")
+        conditions.append("(WORKFLOW_NAME LIKE ? OR ERROR_MESSAGE LIKE ? OR INCIDENT_ID LIKE ?)")
+        params.append(f"%{search}%")
         params.append(f"%{search}%")
         params.append(f"%{search}%")
 
@@ -82,7 +233,7 @@ async def get_monitor_messages(
 
     data_sql = f"""
         SELECT INCIDENT_ID, WORKFLOW_NAME, STATUS, ERROR_CATEGORY, CREATED_AT, UPDATED_AT,
-               ERROR_MESSAGE, RCA_ROOT_CAUSE
+               ERROR_MESSAGE, RCA_ROOT_CAUSE, AI_DIAGNOSIS
         FROM {client.full_table}
         {where}
         ORDER BY CREATED_AT DESC
@@ -102,9 +253,11 @@ async def get_monitor_messages(
             "log_start": d["CREATED_AT"].isoformat() if d["CREATED_AT"] else None,
             "updatedAt": d["UPDATED_AT"].isoformat() if d["UPDATED_AT"] else None,
             "error_type": d["ERROR_CATEGORY"],
+            "root_cause": _format_root_cause_for_display(d),
         })
+    summary = _compute_status_summary(client)
     cursor.close()
-    return {"messages": messages, "total": total}
+    return {"messages": messages, "total": total, "summary": summary}
 
 
 @router.get("/monitor/message/{incident_id}")
@@ -129,8 +282,7 @@ async def get_monitor_message_detail(incident_id: str):
                AUTO_FIX_ATTEMPTED, AUTO_FIX_SUCCESS, RETRY_COUNT,
                AI_DIAGNOSIS, AI_PROPOSED_FIX, AI_CONFIDENCE,
                AI_FIX_PATCH, FIELD_CHANGES, HISTORY_ENTRIES,
-               PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON,
-               ITSM_TICKET_ID, ITSM_TICKET_NUMBER, ITSM_TICKET_STATE, ITSM_TICKET_URL
+               PROPERTIES_JSON, ARTIFACT_JSON, ERROR_DETAILS_JSON
         FROM {client.full_table}
         WHERE INCIDENT_ID = ?
     """
@@ -201,12 +353,6 @@ async def get_monitor_message_detail(incident_id: str):
         "attachments": [],
         "history": history,
         "incident_status": rec["STATUS"],
-        "ticket": {
-            "id": rec.get("ITSM_TICKET_ID"),
-            "number": rec.get("ITSM_TICKET_NUMBER"),
-            "state": rec.get("ITSM_TICKET_STATE"),
-            "url": rec.get("ITSM_TICKET_URL"),
-        },
         "related_knowledge": related_knowledge,
     }
 
@@ -354,13 +500,14 @@ async def generate_fix_patch(incident_id: str):
 
     cursor = client.conn.cursor()
     cursor.execute(
-        f"SELECT WORKFLOW_NAME, SUBSCRIPTION_ID, ERROR_MESSAGE, ERROR_CATEGORY FROM {client.full_table} WHERE INCIDENT_ID = ?",
-        (incident_id,)
+        f"SELECT WORKFLOW_NAME, SUBSCRIPTION_ID, ERROR_MESSAGE, ERROR_CATEGORY, STATUS "
+        f"FROM {client.full_table} WHERE INCIDENT_ID = ?",
+        (incident_id,),
     )
     row = cursor.fetchone()
     if not row:
         raise HTTPException(404, "Incident not found")
-    workflow_name, sub_id, error_msg, error_category = row
+    workflow_name, sub_id, error_msg, error_category, previous_status = row
     cursor.close()
 
     # Use subscription_id from record, fall back to settings
@@ -406,11 +553,26 @@ Workflow definition snippet: {json.dumps(definition, default=str)[:2000]}
     cursor = client.conn.cursor()
     cursor.execute(
         f"UPDATE {client.full_table} SET AI_FIX_PATCH = ? WHERE INCIDENT_ID = ?",
-        (json.dumps(fix_patch), incident_id)
+        (json.dumps(fix_patch), incident_id),
     )
     client.conn.commit()
     cursor.close()
-    return fix_patch
+
+    status_update = _update_status_after_fix_generation(
+        client,
+        incident_id,
+        previous_status or "",
+        error_category or "",
+    )
+
+    return {
+        **fix_patch,
+        "incident_status": status_update["status"],
+        "status_changed": status_update["status_changed"],
+        "policy": status_update["policy"],
+        "previous_status": status_update["previous_status"],
+        "requires_approval": status_update["status"] == "AWAITING_APPROVAL",
+    }
 
 
 @router.post("/monitor/apply-fix/{incident_id}")
@@ -476,8 +638,12 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
 
     if not req.force:
         if policy == "AWAITING_APPROVAL":
+            pending_since = datetime.now(timezone.utc).isoformat()
             cursor = client.conn.cursor()
-            cursor.execute(f"UPDATE {client.full_table} SET STATUS = 'AWAITING_APPROVAL' WHERE INCIDENT_ID = ?", (incident_id,))
+            cursor.execute(
+                f"UPDATE {client.full_table} SET STATUS = 'AWAITING_APPROVAL', PENDING_SINCE = ? WHERE INCIDENT_ID = ?",
+                (pending_since, incident_id),
+            )
             client.conn.commit()
             cursor.close()
             return {"status": "AWAITING_APPROVAL", "summary": f"Policy for {error_category} requires human approval. Click Apply Fix to override and deploy."}
@@ -503,10 +669,12 @@ async def apply_message_fix(incident_id: str, req: ApplyFixRequest):
     if not (settings.AZURE_TENANT_ID and settings.AZURE_CLIENT_ID
             and settings.AZURE_CLIENT_SECRET and effective_sub_id):
         logger.info("apply-fix: ARM credentials not configured — queuing for manual approval")
+        pending_since = datetime.now(timezone.utc).isoformat()
         cursor = client.conn.cursor()
         cursor.execute(
-            f"UPDATE {client.full_table} SET STATUS = 'AWAITING_APPROVAL', AUTO_FIX_ATTEMPTED = TRUE WHERE INCIDENT_ID = ?",
-            (incident_id,)
+            f"UPDATE {client.full_table} SET STATUS = 'AWAITING_APPROVAL', AUTO_FIX_ATTEMPTED = TRUE, PENDING_SINCE = ? "
+            f"WHERE INCIDENT_ID = ?",
+            (pending_since, incident_id),
         )
         client.conn.commit()
         cursor.close()
@@ -793,7 +961,9 @@ async def get_incidents():
 
     cursor = client.conn.cursor()
     cursor.execute(f"""
-        SELECT INCIDENT_ID, SUBSCRIPTION_ID, WORKFLOW_NAME, ERROR_CODE, ERROR_MESSAGE, CREATED_AT
+        SELECT INCIDENT_ID, RUN_ID, SUBSCRIPTION_ID, WORKFLOW_NAME, ERROR_CODE, ERROR_MESSAGE,
+               STATUS, CREATED_AT, UPDATED_AT, LAST_SEEN, OCCURRENCE_COUNT,
+               AI_CONFIDENCE, RCA_CONFIDENCE
         FROM {client.full_table}
         ORDER BY CREATED_AT DESC
         LIMIT 500
@@ -801,19 +971,339 @@ async def get_incidents():
     rows = cursor.fetchall()
     incidents = []
     for row in rows:
+        ai_conf, rca_conf = row[11], row[12]
+        confidence = ai_conf if ai_conf is not None else rca_conf
+        last_seen = row[9] or row[8] or row[7]
         incidents.append({
             "incidentId": row[0],
-            "subscriptionId": row[1],
-            "integrationScenario": row[2],
-            "errorType": row[3],
-            "errorMessage": row[4],
-            "time": row[5].isoformat() if row[5] else None,
+            "runId": row[1],
+            "subscriptionId": row[2],
+            "integrationScenario": row[3],
+            "errorType": row[4],
+            "errorMessage": row[5],
+            "status": row[6],
+            "time": row[7].isoformat() if row[7] else None,
+            "lastSeen": last_seen.isoformat() if last_seen else None,
+            "occurrenceCount": int(row[10] or 1),
+            "rcaConfidence": float(confidence) if confidence is not None else None,
         })
     cursor.close()
     return incidents
 
 
-# Stubs for tickets and approvals (kept for compatibility)
+# Approvals (human sign-off for AI-proposed fixes)
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _resolve_post_fix_status(error_category: str) -> tuple[Optional[str], str]:
+    """
+    Decide incident STATUS after fix plan generation based on remediation policy
+    and global auto-fix setting.
+
+    Returns:
+        (new_status or None, policy_decision_label)
+        None means keep the current status (typically ANALYZED).
+    """
+    from routers.settings import get_error_policy, get_value
+
+    error_type = (error_category or "UNKNOWN_ERROR").strip().upper()
+    policy = get_error_policy(error_type)
+    auto_fix_enabled = bool(get_value("AUTO_FIX_ENABLED"))
+
+    if not auto_fix_enabled:
+        return "AWAITING_APPROVAL", "AWAITING_APPROVAL (AUTO_FIX_ENABLED=false)"
+
+    if policy == "AWAITING_APPROVAL":
+        return "AWAITING_APPROVAL", policy
+    if policy == "TICKET_CREATED":
+        return "TICKET_CREATED", policy
+
+    return None, policy
+
+
+def _update_status_after_fix_generation(
+    client,
+    incident_id: str,
+    previous_status: str,
+    error_category: str,
+) -> dict:
+    """Persist post-generation status transition when policy requires human action."""
+    prev = (previous_status or "").strip().upper() or "UNKNOWN"
+    new_status, policy_decision = _resolve_post_fix_status(error_category)
+
+    if not new_status:
+        logger.info(
+            "generate-fix: incident=%s previous_status=%s new_status=%s policy=%s (unchanged)",
+            incident_id,
+            prev,
+            prev,
+            policy_decision,
+        )
+        return {
+            "incident_id": incident_id,
+            "previous_status": prev,
+            "status": prev,
+            "policy": policy_decision,
+            "status_changed": False,
+        }
+
+    if prev == new_status:
+        logger.info(
+            "generate-fix: incident=%s previous_status=%s new_status=%s policy=%s (already set)",
+            incident_id,
+            prev,
+            new_status,
+            policy_decision,
+        )
+        return {
+            "incident_id": incident_id,
+            "previous_status": prev,
+            "status": new_status,
+            "policy": policy_decision,
+            "status_changed": False,
+        }
+
+    pending_since = _utc_now_iso() if new_status == "AWAITING_APPROVAL" else None
+    cursor = client.conn.cursor()
+    if pending_since:
+        cursor.execute(
+            f"""UPDATE {client.full_table}
+                SET STATUS = ?, PENDING_SINCE = ?, UPDATED_AT = CURRENT_TIMESTAMP
+                WHERE INCIDENT_ID = ?""",
+            (new_status, pending_since, incident_id),
+        )
+    else:
+        cursor.execute(
+            f"""UPDATE {client.full_table}
+                SET STATUS = ?, UPDATED_AT = CURRENT_TIMESTAMP
+                WHERE INCIDENT_ID = ?""",
+            (new_status, incident_id),
+        )
+    client.conn.commit()
+    cursor.close()
+
+    logger.info(
+        "generate-fix: incident=%s previous_status=%s new_status=%s policy=%s",
+        incident_id,
+        prev,
+        new_status,
+        policy_decision,
+    )
+    return {
+        "incident_id": incident_id,
+        "previous_status": prev,
+        "status": new_status,
+        "policy": policy_decision,
+        "status_changed": True,
+        "pending_since": pending_since,
+    }
+
+
+def _format_ts(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _fetch_approval_row(client, incident_id: str) -> Optional[dict]:
+    cursor = client.conn.cursor()
+    cursor.execute(
+        f"""SELECT INCIDENT_ID, WORKFLOW_NAME, IFLOW_ID, ERROR_CATEGORY, ERROR_TYPE,
+                   ERROR_MESSAGE, RCA_ROOT_CAUSE, ROOT_CAUSE, AI_PROPOSED_FIX, PROPOSED_FIX,
+                   AI_CONFIDENCE, RCA_CONFIDENCE, STATUS, CREATED_AT, PENDING_SINCE,
+                   UPDATED_AT, MESSAGE_GUID
+            FROM {client.full_table}
+            WHERE INCIDENT_ID = ?""",
+        (incident_id,),
+    )
+    row = cursor.fetchone()
+    cols = [desc[0] for desc in cursor.description] if row else []
+    cursor.close()
+    if not row:
+        return None
+    return dict(zip(cols, row))
+
+
+def _approval_row_to_payload(rec: dict) -> dict:
+    confidence = rec.get("AI_CONFIDENCE")
+    if confidence is None:
+        confidence = rec.get("RCA_CONFIDENCE")
+    try:
+        confidence = float(confidence or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    root_cause = rec.get("RCA_ROOT_CAUSE") or rec.get("ROOT_CAUSE") or ""
+    proposed_fix = rec.get("AI_PROPOSED_FIX") or rec.get("PROPOSED_FIX") or ""
+    error_type = rec.get("ERROR_CATEGORY") or rec.get("ERROR_TYPE") or "UNKNOWN_ERROR"
+    iflow_id = rec.get("WORKFLOW_NAME") or rec.get("IFLOW_ID") or "Unknown"
+    pending_since = (
+        _format_ts(rec.get("PENDING_SINCE"))
+        or _format_ts(rec.get("UPDATED_AT"))
+        or _format_ts(rec.get("CREATED_AT"))
+    )
+
+    return {
+        "incident_id": rec["INCIDENT_ID"],
+        "iflow_id": iflow_id,
+        "error_type": error_type,
+        "error_message": rec.get("ERROR_MESSAGE") or "",
+        "root_cause": root_cause,
+        "proposed_fix": proposed_fix,
+        "rca_confidence": confidence,
+        "status": rec.get("STATUS") or "AWAITING_APPROVAL",
+        "created_at": _format_ts(rec.get("CREATED_AT")),
+        "pending_since": pending_since,
+        "message_guid": rec.get("MESSAGE_GUID") or rec["INCIDENT_ID"],
+    }
+
+
+def _require_awaiting_approval(client, incident_id: str) -> dict:
+    rec = _fetch_approval_row(client, incident_id)
+    if not rec:
+        raise HTTPException(404, f"Incident {incident_id} not found")
+    status = (rec.get("STATUS") or "").upper()
+    if status != "AWAITING_APPROVAL":
+        raise HTTPException(
+            409,
+            f"Incident {incident_id} is not awaiting approval (current status: {status or 'unknown'})",
+        )
+    return rec
+
+
+@router.get("/approvals/pending")
+async def get_pending_approvals():
+    """Return all incidents awaiting human approval, newest first."""
+    client = get_hana_client()
+    if not client or not client._ensure_connected():
+        raise HTTPException(503, "HANA not available")
+
+    try:
+        cursor = client.conn.cursor()
+        cursor.execute(
+            f"""SELECT INCIDENT_ID, WORKFLOW_NAME, IFLOW_ID, ERROR_CATEGORY, ERROR_TYPE,
+                       ERROR_MESSAGE, RCA_ROOT_CAUSE, ROOT_CAUSE, AI_PROPOSED_FIX, PROPOSED_FIX,
+                       AI_CONFIDENCE, RCA_CONFIDENCE, STATUS, CREATED_AT, PENDING_SINCE,
+                       UPDATED_AT, MESSAGE_GUID
+                FROM {client.full_table}
+                WHERE UPPER(STATUS) = 'AWAITING_APPROVAL'
+                ORDER BY CREATED_AT DESC""",
+        )
+        rows = cursor.fetchall()
+        cols = [desc[0] for desc in cursor.description]
+        cursor.close()
+        pending = [_approval_row_to_payload(dict(zip(cols, row))) for row in rows]
+        logger.info("Fetched %d pending approval(s)", len(pending))
+        return {"pending": pending}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("get_pending_approvals failed: %s", exc, exc_info=True)
+        raise HTTPException(500, "Failed to fetch pending approvals") from exc
+
+
+@router.post("/approvals/{incident_id}/approve")
+async def approve_incident_endpoint(incident_id: str, req: ApproveIncidentRequest):
+    """Approve a pending fix, record timestamp, and trigger the fix pipeline."""
+    client = get_hana_client()
+    if not client or not client._ensure_connected():
+        raise HTTPException(503, "HANA not available")
+
+    _require_awaiting_approval(client, incident_id)
+    approved_at = _utc_now_iso()
+    comment = (req.comment or "Approved via API").strip()
+
+    try:
+        cursor = client.conn.cursor()
+        cursor.execute(
+            f"""UPDATE {client.full_table}
+                SET STATUS = 'APPROVED', APPROVED_AT = ?, COMMENT = ?, UPDATED_AT = CURRENT_TIMESTAMP
+                WHERE INCIDENT_ID = ? AND UPPER(STATUS) = 'AWAITING_APPROVAL'""",
+            (approved_at, comment, incident_id),
+        )
+        if cursor.rowcount == 0:
+            cursor.close()
+            raise HTTPException(409, f"Incident {incident_id} is no longer awaiting approval")
+        client.conn.commit()
+        cursor.close()
+        logger.info("Incident %s approved at %s", incident_id, approved_at)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to record approval for %s: %s", incident_id, exc, exc_info=True)
+        raise HTTPException(500, "Failed to record approval") from exc
+
+    fix_result: dict = {"status": "APPROVED", "summary": "Approval recorded."}
+    try:
+        fix_result = await apply_message_fix(
+            incident_id,
+            ApplyFixRequest(trigger_type="approval", force=True, proposed_fix=None),
+        )
+        logger.info(
+            "Fix pipeline triggered after approval for %s: %s",
+            incident_id,
+            fix_result.get("status"),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Fix pipeline failed after approval for %s: %s", incident_id, exc, exc_info=True)
+        fix_result = {
+            "status": "APPROVED",
+            "summary": f"Approved but fix pipeline failed to start: {exc}",
+        }
+
+    return {
+        "status": "approved",
+        "incident_id": incident_id,
+        "approved_at": approved_at,
+        "comment": comment,
+        "fix": fix_result,
+    }
+
+
+@router.post("/approvals/{incident_id}/reject")
+async def reject_incident_endpoint(incident_id: str, req: RejectIncidentRequest):
+    """Reject a pending fix and record rejection timestamp and reason."""
+    client = get_hana_client()
+    if not client or not client._ensure_connected():
+        raise HTTPException(503, "HANA not available")
+
+    _require_awaiting_approval(client, incident_id)
+    rejected_at = _utc_now_iso()
+    reason = (req.reason or req.comment or "Rejected via API").strip()
+
+    try:
+        cursor = client.conn.cursor()
+        cursor.execute(
+            f"""UPDATE {client.full_table}
+                SET STATUS = 'REJECTED', REJECTED_AT = ?, COMMENT = ?, UPDATED_AT = CURRENT_TIMESTAMP
+                WHERE INCIDENT_ID = ? AND UPPER(STATUS) = 'AWAITING_APPROVAL'""",
+            (rejected_at, reason, incident_id),
+        )
+        if cursor.rowcount == 0:
+            cursor.close()
+            raise HTTPException(409, f"Incident {incident_id} is no longer awaiting approval")
+        client.conn.commit()
+        cursor.close()
+        logger.info("Incident %s rejected at %s: %s", incident_id, rejected_at, reason)
+        return {
+            "status": "rejected",
+            "incident_id": incident_id,
+            "rejected_at": rejected_at,
+            "reason": reason,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to reject incident %s: %s", incident_id, exc, exc_info=True)
+        raise HTTPException(500, "Failed to reject incident") from exc
+
+
+# ITSM escalation tickets
 @router.get("/tickets")
 async def get_tickets(sync: bool = Query(False)):
     client = get_hana_client()
@@ -851,7 +1341,6 @@ async def get_tickets(sync: bool = Query(False)):
             else:
                 sync_meta["failed"] += 1
 
-        # Re-read from HANA after sync
         cursor = client.conn.cursor()
         cursor.execute(f"""
             SELECT INCIDENT_ID, WORKFLOW_NAME, ERROR_CATEGORY, ERROR_MESSAGE,
@@ -874,7 +1363,6 @@ async def get_tickets(sync: bool = Query(False)):
         itsm_number = rec.get("ITSM_TICKET_NUMBER") or rec.get("ITSM_TICKET_ID") or ""
         itsm_url = rec.get("ITSM_TICKET_URL") or ""
 
-        # Map ITSM state to UI status
         state = (rec.get("ITSM_TICKET_STATE") or "").strip().lower()
         if state in {"resolved", "closed", "done"}:
             ui_status = "RESOLVED"
@@ -883,21 +1371,14 @@ async def get_tickets(sync: bool = Query(False)):
         else:
             ui_status = "OPEN"
 
-        # Build description
-        error = rec.get("ERROR_MESSAGE") or ""
-        root_cause = rec.get("RCA_ROOT_CAUSE") or ""
-        proposed = rec.get("AI_PROPOSED_FIX") or ""
         incident_id = rec.get("INCIDENT_ID") or ""
-        description = rec.get("ERROR_MESSAGE") or ""
-
-
         tickets.append({
             "ticket_id": itsm_number or incident_id,
             "incident_id": incident_id,
             "iflow_id": workflow,
             "error_type": error_category,
             "title": f"{workflow} — {error_category}",
-            "description": description,
+            "description": rec.get("ERROR_MESSAGE") or "",
             "status": ui_status,
             "created_at": rec["CREATED_AT"].isoformat() if rec.get("CREATED_AT") else "",
             "updated_at": rec["UPDATED_AT"].isoformat() if rec.get("UPDATED_AT") else "",
@@ -910,6 +1391,7 @@ async def get_tickets(sync: bool = Query(False)):
         })
     return {"tickets": tickets, "sync": sync_meta}
 
+
 @router.post("/tickets/{ticket_id}/update")
 async def update_ticket(ticket_id: str, req: UpdateTicketRequest):
     client = get_hana_client()
@@ -918,7 +1400,6 @@ async def update_ticket(ticket_id: str, req: UpdateTicketRequest):
 
     status = (req.status or "").strip().upper()
     if status != "RESOLVED":
-        # Frontend may send IN_PROGRESS first; full ITSM chain runs on RESOLVED.
         return {"status": "updated"}
 
     cursor = client.conn.cursor()
@@ -961,15 +1442,6 @@ async def update_ticket(ticket_id: str, req: UpdateTicketRequest):
             "itsm_state": result.get("state"),
         },
     }
-
-@router.get("/approvals/pending")
-async def get_pending_approvals():
-    return {"pending": []}
-
-
-@router.post("/approvals/{incident_id}/approve")
-async def approve_incident(_incident_id: str, _req: ApproveIncidentRequest):
-    return {"status": "processed"}
 
 
 @router.get("/aem/status")

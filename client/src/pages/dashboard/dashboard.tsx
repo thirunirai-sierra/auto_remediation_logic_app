@@ -51,9 +51,9 @@ export default function Dashboard() {
   const logs = (logsOverview ?? {}) as LogsOverviewResponse;
   const kpi = (logs.kpi
     ? {
-        in_progress: 0,
+        in_progress: logs.kpi.in_progress ?? 0,
         total_incidents: logs.kpi.total_flows,
-        pending_approval: 0,
+        pending_approval: logs.kpi.pending_approval ?? 0,
         fix_failed: logs.kpi.error_flows,
         auto_fixed: logs.kpi.fixed_flows,
         total_failed_messages: logs.kpi.total_error_messages,
@@ -96,14 +96,14 @@ export default function Dashboard() {
     const pageItems = allLogIncidents.slice(start, start + incidentsPageSize);
     return pageItems.map((item) => ({
       incident_id: item.incidentId ?? "-",
-      message_guid: item.subscriptionId ?? "-",
+      message_guid: item.runId ?? item.subscriptionId ?? "-",
       iflow_id: item.integrationScenario ?? "-",
       error_type: item.errorType ?? "-",
-      status: "FAILED",
+      status: item.status ?? "FAILED",
       created_at: item.time ?? null,
-      last_seen: item.time ?? null,
-      occurrence_count: 1,
-      rca_confidence: "-",
+      last_seen: item.lastSeen ?? item.time ?? null,
+      occurrence_count: item.occurrenceCount ?? 1,
+      rca_confidence: item.rcaConfidence ?? null,
     }));
   }, [allLogIncidents, incidentsPage, incidentsPageSize]);
 

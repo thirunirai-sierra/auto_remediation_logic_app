@@ -9,6 +9,7 @@ import {
   toggleAutoFix,
 } from "../../services/api.ts";
 import SvgIcon, { type IconName } from "../../components/icons/SvgIcon.tsx";
+import StatusPill from "../../components/StatusPill.tsx";
 import _styles from "./pipeline.module.css";
 // Vite 8 types CSS module values as `unknown`; cast so className={styles.x} compiles.
 const styles = _styles as Record<string, string>;
@@ -60,7 +61,7 @@ export default function Pipeline() {
 
   const { data: traceData } = useQuery({
     queryKey: ["pipeline-trace"],
-    queryFn: () => fetchPipelineTrace(30),
+    queryFn: () => fetchPipelineTrace(200),
     refetchInterval: 15_000,   // was 6s
   });
 
@@ -239,8 +240,10 @@ export default function Pipeline() {
                     )}
                   </td>
                   <td><span className={styles.errorTypeBadge}>{inc.error_type}</span></td>
-                  <td><span className={`${styles.statusChip} ${styles[`chip-${inc.status?.toLowerCase().replace(/\s+/g,"_")}`]}`}>{inc.status}</span></td>
-                  <td className={styles.tdRca}>{inc.root_cause ?? "—"}</td>
+                  <td><StatusPill status={inc.status} /></td>
+                  <td className={styles.tdRca} title={inc.root_cause || undefined}>
+                    {inc.root_cause?.trim() ? inc.root_cause : "—"}
+                  </td>
                   <td className={styles.tdDate}>{new Date(inc.created_at).toLocaleString()}</td>
                 </tr>
               ))}

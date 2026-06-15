@@ -11,7 +11,7 @@ import styles from "../dashboard.module.css";
 import {
   CHART_COLORS,
   formatISODate,
-  INCIDENT_STATE,
+  formatRcaConfidence,
   KpiCard,
   SectionTitle,
   SkeletonChart,
@@ -148,8 +148,8 @@ export default function OverviewTab(props: {  dashLoading: boolean;
             <thead><tr><th>Incident ID</th><th>Run ID</th><th>Workflow</th><th>Error Type</th><th>Status</th><th>Created At</th><th>Last Seen</th><th>Occurrences</th><th>RCA Confidence</th></tr></thead>
             <tbody>
               {incidentsLoading ? <SkeletonRows count={5} /> : activeInc.length === 0 ? <tr><td colSpan={9} className={styles.emptyCell}>No data</td></tr> : activeInc.map((row, i) => {
-                const stateClass = INCIDENT_STATE[String(row.status ?? "")] ?? styles.stateNone;
-                return <tr key={i}><td className={styles.mono}>{String(row.incident_id ?? "-")}</td><td className={styles.mono}>{String(row.message_guid ?? "-")}</td><td>{String(row.iflow_id ?? "-")}</td><td>{String(row.error_type ?? "-")}</td><td><span className={`${styles.statusBadge} ${stateClass}`}>{String(row.status ?? "-")}</span></td><td>{formatISODate(row.created_at as string)}</td><td>{formatISODate(row.last_seen as string)}</td><td>{String(row.occurrence_count ?? "-")}</td><td>{String(row.rca_confidence ?? "-")}</td></tr>;
+                const confidence = formatRcaConfidence(row.rca_confidence);
+                return <tr key={i}><td className={styles.mono}>{String(row.incident_id ?? "-")}</td><td className={styles.mono}>{String(row.message_guid ?? "-")}</td><td>{String(row.iflow_id ?? "-")}</td><td>{String(row.error_type ?? "-")}</td><td><StatusBadge status={String(row.status ?? "")} /></td><td>{formatISODate(row.created_at as string)}</td><td>{formatISODate(row.last_seen as string)}</td><td>{String(row.occurrence_count ?? "-")}</td><td style={{ fontWeight: 600, color: confidence.color }}>{confidence.label}</td></tr>;
               })}
             </tbody>
           </table>

@@ -1,6 +1,6 @@
 /**
  * @fileoverview Observability workspace: monitor message list/detail (HANA-backed APIs), AI analyze/explain/fix flows,
- * tickets and approvals stubs, Error Type Guide, and Event Mesh sub-view (`EventMeshFlow`).
+ * tickets and approvals, Error Type Guide, and Event Mesh sub-view (`EventMeshFlow`).
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -17,6 +17,8 @@ import {
   updateTicket,
   fetchPendingApprovals,
   approveIncident,
+  rejectIncident,
+  type PendingApproval,
 } from "../../services/api.ts";
 import type {
   IMonitorMessage,
@@ -78,19 +80,7 @@ interface Ticket {
   itsm_url: string;
 }
 
-interface Approval {
-  incident_id: string;
-  iflow_id: string;
-  error_type: string;
-  error_message: string;
-  root_cause: string;
-  proposed_fix: string;
-  rca_confidence: number;
-  status: string;
-  created_at: string;
-  pending_since: string;
-  message_guid: string;
-}
+interface Approval extends PendingApproval {}
 
 type StatusCfg = { label: string; color: string; bg: string; dot: string };
 
@@ -126,16 +116,44 @@ const STATUS_CONFIG: Record<string, StatusCfg> = {
   FIX_VERIFIED: { ...GREEN, label: "Verified" },
   PENDING_APPROVAL: { ...PURPLE, label: "Pending Approval" },
   AWAITING_APPROVAL: { ...PURPLE, label: "Awaiting Approval" },
+  APPROVED: { ...GREEN, label: "Approved" },
   TICKET_CREATED: { ...PURPLE, label: "Ticket Created" },
   ARTIFACT_MISSING: { ...GREY, label: "Artifact Missing or Deleted" },
   PIPELINE_ERROR: { ...RED, label: "Pipeline Error" },
-  REJECTED: { ...GREY, label: "Rejected" },
+  REJECTED: { ...RED, label: "Rejected" },
   RETRIED: { ...GREEN, label: "Retried" },
+  PIPELINE_STARTED: { ...BLUE, label: "Pipeline Started" },
+  PIPELINE_IN_PROGRESS: { ...BLUE, label: "Pipeline Running" },
+  PIPELINE_OBSERVER: { ...BLUE, label: "Pipeline Observer" },
+  PIPELINE_CLASSIFIER: { ...BLUE, label: "Pipeline Classifier" },
+  PIPELINE_RCA: { ...BLUE, label: "Pipeline RCA" },
+  PIPELINE_FIXER: { ...BLUE, label: "Pipeline Fixer" },
+  PIPELINE_VERIFIER: { ...BLUE, label: "Pipeline Verifier" },
 };
+
+const PROCESSING_STATUSES = [
+  "RCA_IN_PROGRESS", "FIX_IN_PROGRESS", "FIX_APPLIED_PENDING_VERIFICATION", "ANALYZING", "APPROVED",
+  "PIPELINE_STARTED", "PIPELINE_IN_PROGRESS", "PIPELINE_OBSERVER", "PIPELINE_CLASSIFIER",
+  "PIPELINE_RCA", "PIPELINE_FIXER", "PIPELINE_VERIFIER",
+];
+const PROCESSING_STALE_MS = 30 * 60 * 1000;
 
 /** DB/API often returns spaced labels ("Ticket Created"); UI keys are SNAKE_CASE ("TICKET_CREATED"). */
 function normalizeStatusKey(status: string | undefined | null): string {
   return (status ?? "").trim().toUpperCase().replace(/\s+/g, "_");
+}
+
+function isProcessingStatus(status: string | undefined | null): boolean {
+  const key = normalizeStatusKey(status);
+  return PROCESSING_STATUSES.includes(key) || (key.startsWith("PIPELINE_") && key !== "PIPELINE_ERROR");
+}
+
+function isActivelyProcessing(status: string | undefined | null, updatedAt?: string | null): boolean {
+  if (!isProcessingStatus(status)) return false;
+  if (!updatedAt) return true;
+  const ts = new Date(updatedAt).getTime();
+  if (Number.isNaN(ts)) return true;
+  return Date.now() - ts < PROCESSING_STALE_MS;
 }
 
 function StatusPill({ status }: { status: string }) {
@@ -184,7 +202,7 @@ const INITIAL_FILTERS: IFilterState = {
 const CARD_TIPS: Record<string, string> = {
   FAILED: "Messages in FAILED, FIX_FAILED, RCA_FAILED or DETECTED state — need attention",
   SUCCESS: "Messages that reached AUTO_FIXED, HUMAN_FIXED or FIX_VERIFIED state",
-  PROCESSING: "Messages currently in RCA, classification or fix-in-progress stages",
+  PROCESSING: "Incidents actively in the fix pipeline (updated in the last 30 minutes)",
   RETRY: "Messages pending approval, ticket created or scheduled for retry",
 };
 
@@ -211,7 +229,6 @@ const ERROR_TYPE_META: Record<string, ErrorTypeMeta> = {
   WORKFLOW_DEFINITION_ERROR: { label: "Workflow Definition Error", description: "Invalid Logic App workflow JSON — missing required field, unsupported action type, or schema violation.", action: "AUTO_FIX", dot: "#22c55e" },
   AUTH_CONFIG_ERROR: { label: "Auth Config Error", description: "Wrong credential or connection reference inside the workflow — API key, OAuth app registration mismatch.", action: "AUTO_FIX", dot: "#22c55e" },
   HTTP_ERROR: { label: "HTTP Error", description: "HTTP action received a 4xx client error — bad request, wrong endpoint URL, or missing required header.", action: "AUTO_FIX", dot: "#22c55e" },
-  ODATA_ERROR: { label: "OData Error", description: "OData connector action failed — entity set path or query options misconfigured.", action: "AUTO_FIX", dot: "#22c55e" },
   BACKEND_ERROR: { label: "Backend Error", description: "Target service returned HTTP 5xx — the downstream system is down or returning server errors.", action: "TICKET_CREATED", dot: "#ef4444" },
   THROTTLING_ERROR: { label: "Throttling Error", description: "Azure or connector rate limit hit — too many requests in a short window. Infrastructure or retry policy change required.", action: "TICKET_CREATED", dot: "#ef4444" },
   RESOURCE_LIMIT_ERROR: { label: "Resource Limit Error", description: "Logic App run exceeded execution limits (duration, actions, or memory) — workflow redesign required.", action: "TICKET_CREATED", dot: "#ef4444" },
@@ -537,15 +554,24 @@ export default function Observability() {
   const [analyzeLoading, setAnalyzeLoading] = useState(false);
   const [analyzeStep, setAnalyzeStep] = useState(0);
   const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
+  const [approvalToast, setApprovalToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [bulkActionLoading, setBulkActionLoading] = useState<"approving" | "rejecting" | null>(null);
   const [resolvingTicketId, setResolvingTicketId] = useState<string | null>(null);
   const [resolveDraftTicketId, setResolveDraftTicketId] = useState<string | null>(null);
   const [resolveDraftNotes, setResolveDraftNotes] = useState("");
   const [ticketActionError, setTicketActionError] = useState<string | null>(null);
 
+  const statusGroupKey = filters.statuses.join(",");
+  const searchKey = filters.searchQuery || filters.idQuery || "";
+
   const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ["monitor-messages"],
-    queryFn: fetchMonitorMessages,
+    queryKey: ["monitor-messages", statusGroupKey, searchKey],
+    queryFn: () => fetchMonitorMessages({
+      limit: 50,
+      offset: 0,
+      statusGroup: filters.statuses.length ? filters.statuses : undefined,
+      search: searchKey || undefined,
+    }),
     refetchInterval: 30_000,
     staleTime: 20_000,
   });
@@ -578,30 +604,15 @@ export default function Observability() {
   const STATUS_GROUP: Record<string, string[]> = {
     FAILED:     ["FAILED", "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME", "RCA_FAILED", "PIPELINE_ERROR", "DETECTED", "ARTIFACT_MISSING"],
     SUCCESS:    ["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "SUCCESS", "HUMAN_INITIATED_FIX", "FIX_DEPLOYED"],
-    PROCESSING: ["RCA_IN_PROGRESS", "FIX_IN_PROGRESS", "FIX_ATTEMPTED", "CLASSIFIED", "RCA_COMPLETE", "FIX_APPLIED_PENDING_VERIFICATION", "PROCESSING"],
+    PROCESSING: PROCESSING_STATUSES,
     RETRY:      ["RETRY", "PENDING_APPROVAL", "TICKET_CREATED", "AWAITING_APPROVAL"],
   };
 
-  // Normalized messages with status filtering (spaces -> underscores)
-  const messages = useMemo(() => {
-    return ((data?.messages || []) as IMonitorMessage[]).filter((m) => {
-      const s = normalizeStatusKey(m.status);
-      if (filters.statuses.length) {
-        const allowed = filters.statuses.flatMap((g) => STATUS_GROUP[g] || [g]);
-        if (!allowed.includes(s)) return false;
-      }
-      if (filters.searchQuery) {
-        const q = filters.searchQuery.toLowerCase();
-        if (!(m.iflow_display || m.title || "").toLowerCase().includes(q)) return false;
-      }
-      if (filters.idQuery) {
-        const q = filters.idQuery.toLowerCase();
-        if (!(m.message_guid || "").toLowerCase().includes(q) &&
-            !(m.iflow_display || "").toLowerCase().includes(q)) return false;
-      }
-      return true;
-    });
-  }, [data, filters]);
+  // Server applies status_group + search; list rows already match active filters.
+  const messages = useMemo(
+    () => ((data?.messages || []) as IMonitorMessage[]),
+    [data],
+  );
 
   // Counts for summary cards (normalized statuses)
   const counts = useMemo(() => {
@@ -621,7 +632,7 @@ export default function Observability() {
       const st = normalizeStatusKey(m.status);
       if (["FAILED", "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME", "RCA_FAILED", "PIPELINE_ERROR", "DETECTED", "ARTIFACT_MISSING"].includes(st)) result.FAILED++;
       else if (["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "SUCCESS", "HUMAN_INITIATED_FIX", "FIX_DEPLOYED"].includes(st)) result.SUCCESS++;
-      else if (["RCA_IN_PROGRESS", "FIX_IN_PROGRESS", "FIX_ATTEMPTED", "CLASSIFIED", "RCA_COMPLETE", "FIX_APPLIED_PENDING_VERIFICATION", "PROCESSING"].includes(st)) result.PROCESSING++;
+      else if (isActivelyProcessing(m.status, m.updatedAt)) result.PROCESSING++;
       else if (["RETRY", "PENDING_APPROVAL", "TICKET_CREATED", "AWAITING_APPROVAL"].includes(st)) result.RETRY++;
     });
     return result;
@@ -630,26 +641,54 @@ export default function Observability() {
   const tickets = (ticketsData?.tickets || []) as Ticket[];
   const approvals = (approvalsData?.pending || []) as Approval[];
 
-  // Handlers for approvals, tickets, etc. (keep as in original, unchanged)
+  const showApprovalToast = useCallback((type: "success" | "error", message: string) => {
+    setApprovalToast({ type, message });
+  }, []);
+
+  useEffect(() => {
+    if (!approvalToast) return;
+    const timer = window.setTimeout(() => setApprovalToast(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [approvalToast]);
+
+  const parseActionError = useCallback((err: unknown, fallback: string) => {
+    if (err instanceof Error && err.message) {
+      try {
+        const parsed = JSON.parse(err.message) as { detail?: string };
+        if (parsed.detail) return parsed.detail;
+      } catch {
+        return err.message;
+      }
+      return err.message;
+    }
+    return fallback;
+  }, []);
+
   const handleApprove = useCallback(async (incidentId: string) => {
     setApprovalActionError(null);
     try {
-      await approveIncident(incidentId, true, "Approved via UI");
+      await approveIncident(incidentId, "Approved via UI");
+      showApprovalToast("success", `Incident ${incidentId} approved — fix pipeline started.`);
       refetchApprovals();
-    } catch {
-      setApprovalActionError("Approval failed — network error. Please check your connection.");
+    } catch (err) {
+      const message = parseActionError(err, "Approval failed — network error. Please check your connection.");
+      setApprovalActionError(message);
+      showApprovalToast("error", message);
     }
-  }, [refetchApprovals]);
+  }, [refetchApprovals, showApprovalToast, parseActionError]);
 
   const handleReject = useCallback(async (incidentId: string) => {
     setApprovalActionError(null);
     try {
-      await approveIncident(incidentId, false, "Rejected via UI");
+      await rejectIncident(incidentId, "Rejected via UI");
+      showApprovalToast("success", `Incident ${incidentId} rejected.`);
       refetchApprovals();
-    } catch {
-      setApprovalActionError("Rejection failed — network error. Please check your connection.");
+    } catch (err) {
+      const message = parseActionError(err, "Rejection failed — network error. Please check your connection.");
+      setApprovalActionError(message);
+      showApprovalToast("error", message);
     }
-  }, [refetchApprovals]);
+  }, [refetchApprovals, showApprovalToast, parseActionError]);
 
   const handleApproveAll = useCallback(async () => {
     const pending = (approvalsData?.pending || []) as Approval[];
@@ -660,15 +699,21 @@ export default function Observability() {
     const errors: string[] = [];
     await Promise.allSettled(
       targets.map((a) =>
-        approveIncident(a.incident_id, true, "Bulk approved via UI").catch(() => {
+        approveIncident(a.incident_id, "Bulk approved via UI").catch(() => {
           errors.push(a.incident_id);
         })
       )
     );
     setBulkActionLoading(null);
-    if (errors.length) setApprovalActionError(`${errors.length} approval(s) failed. Others succeeded.`);
+    if (errors.length) {
+      const message = `${errors.length} approval(s) failed. Others succeeded.`;
+      setApprovalActionError(message);
+      showApprovalToast("error", message);
+    } else {
+      showApprovalToast("success", `${targets.length} incident(s) approved.`);
+    }
     refetchApprovals();
-  }, [approvalsData, refetchApprovals]);
+  }, [approvalsData, refetchApprovals, showApprovalToast]);
 
   const handleRejectAll = useCallback(async () => {
     const pending = (approvalsData?.pending || []) as Approval[];
@@ -679,15 +724,21 @@ export default function Observability() {
     const errors: string[] = [];
     await Promise.allSettled(
       targets.map((a) =>
-        approveIncident(a.incident_id, false, "Bulk rejected via UI").catch(() => {
+        rejectIncident(a.incident_id, "Bulk rejected via UI").catch(() => {
           errors.push(a.incident_id);
         })
       )
     );
     setBulkActionLoading(null);
-    if (errors.length) setApprovalActionError(`${errors.length} rejection(s) failed. Others succeeded.`);
+    if (errors.length) {
+      const message = `${errors.length} rejection(s) failed. Others succeeded.`;
+      setApprovalActionError(message);
+      showApprovalToast("error", message);
+    } else {
+      showApprovalToast("success", `${targets.length} incident(s) rejected.`);
+    }
     refetchApprovals();
-  }, [approvalsData, refetchApprovals]);
+  }, [approvalsData, refetchApprovals, showApprovalToast]);
 
   const handleStartResolve = useCallback((ticketId: string) => {
     setTicketActionError(null);
@@ -774,6 +825,9 @@ export default function Observability() {
       } else if (["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED"].includes(incStatus)) {
         setFixState("success");
         setFixResult(d.ai_recommendation?.fix_summary || "Fix applied and deployed successfully.");
+      } else if (incStatus === "AWAITING_APPROVAL") {
+        setFixState("idle");
+        setFixResult("Queued for approval — go to the Approvals tab to review and approve this fix.");
       } else if (incStatus === "TICKET_CREATED") {
         setFixState("ticket_created");
         setFixResult(d.ai_recommendation?.fix_summary || "Escalated — a ticket has been created for manual review.");
@@ -831,12 +885,21 @@ export default function Observability() {
     try {
       const patch = await generateFixPatch(selectedGuid) as IFixPatchResponse;
       setFixPatch(patch);
+      const d = await fetchMonitorMessageDetail(selectedGuid) as IMessageDetail;
+      setDetail(d);
+      refetch();
+      if (patch.requires_approval || normalizeStatusKey(patch.incident_status) === "AWAITING_APPROVAL") {
+        setFixResult("Fix plan generated and queued for approval — go to the Approvals tab to review.");
+      } else if (normalizeStatusKey(patch.incident_status) === "TICKET_CREATED") {
+        setFixState("ticket_created");
+        setFixResult("Fix plan generated — this incident was escalated to a ticket for manual review.");
+      }
     } catch (e) {
       setFixPatchError(e instanceof Error ? e.message : "Fix generation failed — check backend logs.");
     } finally {
       setFixPatchLoading(false);
     }
-  }, [selectedGuid]);
+  }, [selectedGuid, refetch]);
 
   /* ── Live fix polling (shared by handleApplyFix and auto-resume) ──── */
   const pollAbortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
@@ -1448,7 +1511,10 @@ export default function Observability() {
                         </div>
                       )
                     )}
-                    {fixPatch && fixState === "idle" && (
+                    {fixPatch && fixState === "idle" && normalizeStatusKey(detail?.incident_status) === "AWAITING_APPROVAL" && (
+                      <span className={styles.fixFooterHint}>Fix plan ready — review and approve in the Approvals tab before it can be applied.</span>
+                    )}
+                    {fixPatch && fixState === "idle" && normalizeStatusKey(detail?.incident_status) !== "AWAITING_APPROVAL" && (
                       <span className={styles.fixFooterHint}>Fix plan ready — click Apply Fix to execute the automated patch & deploy.</span>
                     )}
                   </div>
@@ -1621,6 +1687,12 @@ export default function Observability() {
               <button onClick={() => refetchApprovals()} disabled={approvalsLoading || !!bulkActionLoading}>{approvalsLoading ? "Loading..." : "Refresh"}</button>
             </div>
           </div>
+          {approvalToast && (
+            <div className={`${styles.approvalToast} ${approvalToast.type === "success" ? styles.approvalToastSuccess : styles.approvalToastError}`}>
+              {approvalToast.message}
+              <button onClick={() => setApprovalToast(null)} aria-label="Dismiss">✕</button>
+            </div>
+          )}
           {approvalActionError && <div className={styles.approvalErrorBanner}>{approvalActionError}<button onClick={() => setApprovalActionError(null)}>✕</button></div>}
           {!approvalsLoading && approvals.length > 0 && (
             <div className={styles.kpiRow}>
@@ -1655,7 +1727,7 @@ export default function Observability() {
               {approvals.map((approval) => (
                 <div key={approval.incident_id} className={styles.approvalCard}>
                   <div className={styles.approvalHeader}>
-                    <div><h3>{approval.iflow_id}</h3><span className={styles.approvalId}>Incident: {approval.incident_id}</span></div>
+                    <div><h3>{approval.iflow_id}</h3><span className={styles.approvalId}>{approval.incident_id}</span></div>
                     <StatusPill status={approval.status} />
                   </div>
                   <div className={styles.approvalBody}>
@@ -1663,18 +1735,20 @@ export default function Observability() {
                     <div className={styles.approvalSection}><strong>Error Message:</strong><p className={styles.errorText}>{approval.error_message}</p></div>
                     <div className={styles.approvalSection}><strong>Root Cause:</strong><p>{approval.root_cause}</p></div>
                     <div className={styles.approvalSection}><strong>Proposed Fix:</strong><p className={styles.fixText}>{approval.proposed_fix}</p></div>
-                    <div className={styles.approvalMeta}>
-                      <span><strong>Confidence:</strong> {(approval.rca_confidence * 100).toFixed(0)}%</span>
-                      <span><strong>Created:</strong> {new Date(approval.created_at).toLocaleString()}</span>
-                      <span><strong>Pending Since:</strong> {new Date(approval.pending_since).toLocaleString()}</span>
-                    </div>
                   </div>
-                  {approval.status === "AWAITING_APPROVAL" && (
-                    <div className={styles.approvalActions}>
-                      <button className={`${styles.btn} ${styles.btnApprove}`} onClick={() => handleApprove(approval.incident_id)}>✓ Approve</button>
-                      <button className={`${styles.btn} ${styles.btnReject}`} onClick={() => handleReject(approval.incident_id)}>✗ Reject</button>
+                  <div className={styles.approvalFooter}>
+                    <div className={styles.approvalMeta}>
+                      <span><strong>Confidence:</strong> {((approval.rca_confidence ?? 0) * 100).toFixed(0)}%</span>
+                      <span><strong>Created:</strong> {approval.created_at ? new Date(approval.created_at).toLocaleString() : "—"}</span>
+                      <span><strong>Pending Since:</strong> {approval.pending_since ? new Date(approval.pending_since).toLocaleString() : "—"}</span>
                     </div>
-                  )}
+                    {approval.status === "AWAITING_APPROVAL" && (
+                      <div className={styles.approvalActions}>
+                        <button type="button" className={`${styles.btn} ${styles.btnApprove}`} onClick={() => handleApprove(approval.incident_id)}>✓ Approve</button>
+                        <button type="button" className={`${styles.btn} ${styles.btnReject}`} onClick={() => handleReject(approval.incident_id)}>✗ Reject</button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

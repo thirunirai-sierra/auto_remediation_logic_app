@@ -212,6 +212,11 @@ export interface IFixPatchResponse {
   affected_component: string;
   ready_to_apply: boolean;
   can_apply: boolean;
+  incident_status?: string;
+  status_changed?: boolean;
+  policy?: string;
+  previous_status?: string;
+  requires_approval?: boolean;
 }
 
 // ── Test Suite ────────────────────────────────────────────────────────────────
