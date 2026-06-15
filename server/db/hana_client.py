@@ -393,6 +393,9 @@ class HanaClient:
                 ("CURRENT_VALUE",           "NCLOB MEMORY THRESHOLD 1000"),
                 ("CORRECT_VALUE",           "NCLOB MEMORY THRESHOLD 1000"),
                 ("RCA_FIXES_JSON",          "NCLOB MEMORY THRESHOLD 1000"),
+                ("TICKET_PRIORITY",         "NVARCHAR(16)"),
+                ("ITSM_ASSIGNED_TO",        "NVARCHAR(256)"),
+                ("ITSM_RESOLUTION_NOTES",   "NCLOB"),
             ]
             for col_name, col_type in new_columns:
                 try:
@@ -443,6 +446,9 @@ class HanaClient:
                 ITSM_TICKET_NUMBER      NVARCHAR(64),
                 ITSM_TICKET_STATE       NVARCHAR(64),
                 ITSM_TICKET_URL         NVARCHAR(512),
+                TICKET_PRIORITY           NVARCHAR(16),
+                ITSM_ASSIGNED_TO          NVARCHAR(256),
+                ITSM_RESOLUTION_NOTES     NCLOB,
                 MESSAGE_GUID            NVARCHAR(200),
                 IFLOW_ID                NVARCHAR(500),
                 SENDER                  NVARCHAR(200),

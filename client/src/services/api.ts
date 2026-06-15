@@ -434,11 +434,12 @@ export interface ApprovalActionResponse {
 }
 
 /**
-* Lists support tickets from logging service.
-* @returns {Promise<{ tickets: unknown[] }>} Tickets array.
-*/
-export async function fetchTickets(): Promise<{ tickets: unknown[] }> {
-  return request(`${LOG_API_BASE}/api/tickets`);
+ * Lists support tickets from logging service.
+ * @returns {Promise<{ tickets: unknown[] }>} Tickets array.
+ */
+export async function fetchTickets(sync = false): Promise<{ tickets: unknown[]; sync?: unknown }> {
+  const qs = sync ? "?sync=true" : "";
+  return request(`${LOG_API_BASE}/api/tickets${qs}`);
 }
 
 /**
