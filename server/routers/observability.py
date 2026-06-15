@@ -16,7 +16,7 @@ from services.workflow_service import get_workflow
 from services.agents.knowledge.knowledge_base import KnowledgeAgent
 from services.agents.knowledge.embedder import get_embedder
 from utils.llm_client import AICoreLLMClient
-from services.itsm_service import ensure_ticket_for_incident
+from services.itsm_service import ensure_ticket_for_incident, is_enabled, sync_ticket_from_itsm, resolve_ticket_in_itsm, priority_from_error_category
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -815,14 +815,152 @@ async def get_incidents():
 
 # Stubs for tickets and approvals (kept for compatibility)
 @router.get("/tickets")
-async def get_tickets():
-    return {"tickets": []}
+async def get_tickets(sync: bool = Query(False)):
+    client = get_hana_client()
+    if not client or not client._ensure_connected():
+        return {"tickets": []}
+    cursor = client.conn.cursor()
+    cursor.execute(f"""
+        SELECT INCIDENT_ID, WORKFLOW_NAME, ERROR_CATEGORY, ERROR_MESSAGE,
+               RCA_ROOT_CAUSE, AI_PROPOSED_FIX,
+               ITSM_TICKET_ID, ITSM_TICKET_NUMBER, ITSM_TICKET_STATE,
+               ITSM_TICKET_URL, TICKET_PRIORITY, ITSM_ASSIGNED_TO, ITSM_RESOLUTION_NOTES, CREATED_AT, UPDATED_AT
+        FROM {client.full_table}
+        WHERE ITSM_TICKET_ID IS NOT NULL
+        ORDER BY CREATED_AT DESC, ITSM_TICKET_NUMBER DESC
+    """)
+    rows = cursor.fetchall()
+    cols = [desc[0] for desc in cursor.description]
+    cursor.close()
 
+    sync_meta = {"requested": sync, "synced": 0, "failed": 0, "skipped": 0}
+
+    if sync and is_enabled(settings):
+        records = [dict(zip(cols, row)) for row in rows]
+        for rec in records:
+            incident_id = rec.get("INCIDENT_ID")
+            itsm_id = rec.get("ITSM_TICKET_ID")
+            if not incident_id or not itsm_id:
+                sync_meta["skipped"] += 1
+                continue
+            result = sync_ticket_from_itsm(client, incident_id, itsm_id, settings)
+            if result.get("synced"):
+                sync_meta["synced"] += 1
+            elif result.get("skipped"):
+                sync_meta["skipped"] += 1
+            else:
+                sync_meta["failed"] += 1
+
+        # Re-read from HANA after sync
+        cursor = client.conn.cursor()
+        cursor.execute(f"""
+            SELECT INCIDENT_ID, WORKFLOW_NAME, ERROR_CATEGORY, ERROR_MESSAGE,
+                   RCA_ROOT_CAUSE, AI_PROPOSED_FIX,
+                   ITSM_TICKET_ID, ITSM_TICKET_NUMBER, ITSM_TICKET_STATE,
+                   ITSM_TICKET_URL, TICKET_PRIORITY, ITSM_ASSIGNED_TO, ITSM_RESOLUTION_NOTES, CREATED_AT, UPDATED_AT
+            FROM {client.full_table}
+            WHERE ITSM_TICKET_ID IS NOT NULL
+            ORDER BY CREATED_AT DESC, ITSM_TICKET_NUMBER DESC
+        """)
+        rows = cursor.fetchall()
+        cols = [desc[0] for desc in cursor.description]
+        cursor.close()
+
+    tickets = []
+    for row in rows:
+        rec = dict(zip(cols, row))
+        workflow = rec.get("WORKFLOW_NAME") or "unknown"
+        error_category = rec.get("ERROR_CATEGORY") or "unknown"
+        itsm_number = rec.get("ITSM_TICKET_NUMBER") or rec.get("ITSM_TICKET_ID") or ""
+        itsm_url = rec.get("ITSM_TICKET_URL") or ""
+
+        # Map ITSM state to UI status
+        state = (rec.get("ITSM_TICKET_STATE") or "").strip().lower()
+        if state in {"resolved", "closed", "done"}:
+            ui_status = "RESOLVED"
+        elif state in {"in_progress", "in progress", "assigned", "working"}:
+            ui_status = "IN_PROGRESS"
+        else:
+            ui_status = "OPEN"
+
+        # Build description
+        error = rec.get("ERROR_MESSAGE") or ""
+        root_cause = rec.get("RCA_ROOT_CAUSE") or ""
+        proposed = rec.get("AI_PROPOSED_FIX") or ""
+        incident_id = rec.get("INCIDENT_ID") or ""
+        description = rec.get("ERROR_MESSAGE") or ""
+
+
+        tickets.append({
+            "ticket_id": itsm_number or incident_id,
+            "incident_id": incident_id,
+            "iflow_id": workflow,
+            "error_type": error_category,
+            "title": f"{workflow} — {error_category}",
+            "description": description,
+            "status": ui_status,
+            "created_at": rec["CREATED_AT"].isoformat() if rec.get("CREATED_AT") else "",
+            "updated_at": rec["UPDATED_AT"].isoformat() if rec.get("UPDATED_AT") else "",
+            "itsm_number": itsm_number,
+            "itsm_url": itsm_url,
+            "priority": rec.get("TICKET_PRIORITY") or priority_from_error_category(error_category),
+            "assigned_to": rec.get("ITSM_ASSIGNED_TO") or None,
+            "resolution_notes": rec.get("ITSM_RESOLUTION_NOTES") or None,
+            "resolved_at": None,
+        })
+    return {"tickets": tickets, "sync": sync_meta}
 
 @router.post("/tickets/{ticket_id}/update")
-async def update_ticket(_ticket_id: str, _req: UpdateTicketRequest):
-    return {"status": "updated"}
+async def update_ticket(ticket_id: str, req: UpdateTicketRequest):
+    client = get_hana_client()
+    if not client or not client._ensure_connected():
+        raise HTTPException(status_code=503, detail="HANA unavailable")
 
+    status = (req.status or "").strip().upper()
+    if status != "RESOLVED":
+        # Frontend may send IN_PROGRESS first; full ITSM chain runs on RESOLVED.
+        return {"status": "updated"}
+
+    cursor = client.conn.cursor()
+    cursor.execute(
+        f"""SELECT INCIDENT_ID, ITSM_TICKET_ID, ITSM_TICKET_NUMBER, ITSM_TICKET_STATE
+            FROM {client.full_table}
+            WHERE ITSM_TICKET_NUMBER = ? OR INCIDENT_ID = ? OR ITSM_TICKET_ID = ?
+            LIMIT 1""",
+        (ticket_id, ticket_id, ticket_id),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="ticket_not_found")
+
+    incident_id, itsm_ticket_id, itsm_number, _itsm_state = row
+    if not itsm_ticket_id:
+        raise HTTPException(status_code=400, detail="ticket_has_no_itsm_id")
+
+    result = resolve_ticket_in_itsm(
+        client,
+        incident_id,
+        itsm_ticket_id,
+        settings,
+        resolution_notes=req.resolution_notes,
+    )
+    if not result.get("resolved"):
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("error") or result.get("reason") or "resolve_failed",
+        )
+
+    return {
+        "status": "updated",
+        "ticket": {
+            "ticket_id": itsm_number or ticket_id,
+            "incident_id": incident_id,
+            "status": "RESOLVED",
+            "itsm_state": result.get("state"),
+        },
+    }
 
 @router.get("/approvals/pending")
 async def get_pending_approvals():

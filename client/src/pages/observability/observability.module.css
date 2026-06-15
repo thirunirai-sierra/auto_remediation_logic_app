@@ -1607,6 +1607,28 @@
   font-weight: 500;
 }
 
+.itsmBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  letter-spacing: 0.03em;
+  background: #eff6ff;      /* light blue like screenshot */
+  color: #1e40af; 
+  border: 1px solid #c4b5fd;
+}
+
+.itsmBadge .itsmBadgeLabel {
+  font-weight: 700;
+  color: #1e40af;
+}
+
+.itsmBadgeNumber {
+  font-weight: 500;         /* or 400 for fully unbolded */
+}
+
 .ticketDescription {
   color: var(--orbit-gray-700, #374151);
   line-height: 1.6;
@@ -1659,6 +1681,99 @@
   margin: 0;
   font-size: 0.85rem;
   line-height: 1.5;
+}
+
+.ticketResolutionForm {
+  margin-top: 0.875rem;
+  padding: 0.75rem 1rem;
+  background: #f0fdf4;
+  border-radius: 0.5rem;
+  border: 1px solid #86efac;
+}
+
+.ticketResolutionFormTitle {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #16a34a;
+}
+
+.ticketResolutionInput {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #86efac;
+  border-radius: 0.375rem;
+  font-size: 0.85rem;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 4.5rem;
+  background: #fff;
+}
+
+.ticketResolutionInput:focus {
+  outline: none;
+  border-color: #16a34a;
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.15);
+}
+
+.ticketResolveActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.625rem;
+}
+
+.btnResolveCancel,
+.btnResolveConfirm {
+  padding: 0.35rem 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+  line-height: 1.25;
+}
+
+.btnResolveCancel {
+  background: #fff;
+  color: #374151;
+  border: 1px solid #d1d5db;
+}
+
+.btnResolveCancel:hover:not(:disabled) {
+  background: #f9fafb;
+}
+
+.btnResolveConfirm {
+  background: #16a34a;
+  color: #fff;
+  border: 1px solid #16a34a;
+}
+
+.btnResolveConfirm:hover:not(:disabled) {
+  background: #15803d;
+}
+
+.btnResolveCancel:disabled,
+.btnResolveConfirm:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ticketResolvedLabel {
+  color: #16a34a;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.ticketFooterActions {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
 }
 
 .ticketFooter {

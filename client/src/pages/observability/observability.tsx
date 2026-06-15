@@ -3,7 +3,7 @@
  * tickets and approvals stubs, Error Type Guide, and Event Mesh sub-view (`EventMeshFlow`).
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import SvgIcon from "../../components/icons/SvgIcon.tsx";
 import {
   fetchMonitorMessages,
@@ -30,7 +30,6 @@ import type {
 } from "../../types/index.ts";
 import styles from "./observability.module.css";
 import EventMeshFlow from "./EventMeshFlow.tsx";
-
 // ============================================================================
 // Utility functions
 // ============================================================================
@@ -75,6 +74,8 @@ interface Ticket {
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
+  itsm_number: string;
+  itsm_url: string;
 }
 
 interface Approval {
@@ -538,6 +539,8 @@ export default function Observability() {
   const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
   const [bulkActionLoading, setBulkActionLoading] = useState<"approving" | "rejecting" | null>(null);
   const [resolvingTicketId, setResolvingTicketId] = useState<string | null>(null);
+  const [resolveDraftTicketId, setResolveDraftTicketId] = useState<string | null>(null);
+  const [resolveDraftNotes, setResolveDraftNotes] = useState("");
   const [ticketActionError, setTicketActionError] = useState<string | null>(null);
 
   const { data, isLoading, refetch, isFetching } = useQuery({
@@ -549,10 +552,21 @@ export default function Observability() {
 
   const { data: ticketsData, isLoading: ticketsLoading, refetch: refetchTickets } = useQuery({
     queryKey: ["escalation-tickets"],
-    queryFn: fetchTickets,
+    queryFn: () => fetchTickets(false),
     refetchInterval: 30_000,
     enabled: mainTab === "tickets",
   });
+  const queryClient = useQueryClient();
+
+  const handleRefreshTickets = useCallback(async () => {
+    setTicketActionError(null);
+    try{
+      const data = await fetchTickets(true);
+      queryClient.setQueryData(["escalation-tickets"], data);
+    } catch (e) {
+      setTicketActionError(e instanceof Error ? e.message : "Failed to refresh tickets");
+    }
+  }, [queryClient]);
 
   const { data: approvalsData, isLoading: approvalsLoading, refetch: refetchApprovals } = useQuery({
     queryKey: ["pending-approvals"],
@@ -675,21 +689,51 @@ export default function Observability() {
     refetchApprovals();
   }, [approvalsData, refetchApprovals]);
 
-  const handleMarkResolved = useCallback(async (ticketId: string, currentStatus: string) => {
+  const handleStartResolve = useCallback((ticketId: string) => {
+    setTicketActionError(null);
+    setResolveDraftTicketId(ticketId);
+    setResolveDraftNotes("");
+  }, []);
+
+  const handleCancelResolve = useCallback(() => {
+    setResolveDraftTicketId(null);
+    setResolveDraftNotes("");
+  }, []);
+
+  const handleConfirmResolve = useCallback(async (ticketId: string) => {
     setResolvingTicketId(ticketId);
     setTicketActionError(null);
+    const notes = resolveDraftNotes.trim() || null;
     try {
-      if (currentStatus.toUpperCase() === "OPEN") {
-        await updateTicket(ticketId, { status: "IN_PROGRESS" });
-      }
-      await updateTicket(ticketId, { status: "RESOLVED" });
-      refetchTickets();
+      await updateTicket(ticketId, {
+        status: "RESOLVED",
+        resolution_notes: notes,
+      });
+
+      queryClient.setQueryData<{ tickets: Ticket[]; sync?: unknown }>(
+        ["escalation-tickets"],
+        (old) => {
+          if (!old?.tickets) return old;
+          return {
+            ...old,
+            tickets: old.tickets.map((t) =>
+              t.ticket_id === ticketId
+                ? { ...t, status: "RESOLVED", resolution_notes: notes ?? t.resolution_notes }
+                : t
+            ),
+          };
+        }
+      );
+
+      setResolveDraftTicketId(null);
+      setResolveDraftNotes("");
+      await handleRefreshTickets();
     } catch (e) {
       setTicketActionError(e instanceof Error ? e.message : "Failed to update ticket");
     } finally {
       setResolvingTicketId(null);
     }
-  }, [refetchTickets]);
+  }, [resolveDraftNotes, handleRefreshTickets, queryClient]);
 
   /* ── Select a message and load full detail ─────────────────────────── */
   const handleSelect = useCallback(async (msg: IMonitorMessage) => {
@@ -1419,7 +1463,7 @@ export default function Observability() {
         <div className={styles.ticketsContainer}>
           <div className={styles.ticketsHeader}>
             <div><h2>Escalation Tickets</h2><p className={styles.tabDescription}>Incidents that could not be auto-remediated are escalated here as tickets for manual review and resolution.</p></div>
-            <button onClick={() => refetchTickets()} disabled={ticketsLoading}>{ticketsLoading ? "Loading..." : "Refresh"}</button>
+            <button onClick={() => handleRefreshTickets()} disabled={ticketsLoading}>{ticketsLoading ? "Loading..." : "Refresh"}</button>
           </div>
           {!ticketsLoading && tickets.length > 0 && (
             <div className={styles.kpiRow}>
@@ -1466,6 +1510,12 @@ export default function Observability() {
                       <span><strong>Workflow:</strong> {ticket.iflow_id}</span>
                       <span><strong>Error Type:</strong> {ticket.error_type}</span>
                       {ticket.assigned_to && <span><strong>Assigned To:</strong> {ticket.assigned_to}</span>}
+                      {ticket.itsm_number && (
+                        <span className={styles.itsmBadge}>
+                           <strong className={styles.itsmBadgeLabel}>ITSM</strong>{" "}
+                           <span className={styles.itsmBadgeNumber}>{ticket.itsm_number}</span>
+                         </span>
+)}
                     </div>
                     {(() => {
                       const parsed = parseTicketDescription(ticket.description);
@@ -1491,19 +1541,61 @@ export default function Observability() {
                         </div>
                       );
                     })()}
-                    {ticket.resolution_notes && (
+                    {ticket.resolution_notes &&
+                      (ticket.status || "").toUpperCase() === "RESOLVED" && (
                       <div className={styles.ticketResolution}><strong>Resolution:</strong><p>{ticket.resolution_notes}</p></div>
+                    )}
+                    {resolveDraftTicketId === ticket.ticket_id &&
+                      (ticket.status || "").toUpperCase() !== "RESOLVED" && (
+                      <div className={styles.ticketResolutionForm}>
+                        <strong className={styles.ticketResolutionFormTitle}>— RESOLUTION NOTES</strong>
+                        <textarea
+                          className={styles.ticketResolutionInput}
+                          placeholder="Describe what was done to fix this issue (optional)..."
+                          value={resolveDraftNotes}
+                          onChange={(e) => setResolveDraftNotes(e.target.value)}
+                          rows={3}
+                          disabled={resolvingTicketId === ticket.ticket_id}
+                        />
+                        <div className={styles.ticketResolveActions}>
+                          <button
+                            type="button"
+                            className={styles.btnResolveCancel}
+                            onClick={handleCancelResolve}
+                            disabled={resolvingTicketId === ticket.ticket_id}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.btnResolveConfirm}
+                            onClick={() => handleConfirmResolve(ticket.ticket_id)}
+                            disabled={resolvingTicketId === ticket.ticket_id}
+                          >
+                            {resolvingTicketId === ticket.ticket_id ? "Resolving…" : "✓ Confirm Resolve"}
+                          </button>
+                        </div>
+                      </div>
                     )}
                   </div>
                   <div className={styles.ticketFooter}>
-                    <span>Created: {new Date(ticket.created_at).toLocaleString()}</span>
-                    <span>Updated: {new Date(ticket.updated_at).toLocaleString()}</span>
-                    <div className={styles.approvalActions} style={{ marginLeft: "auto" }}>
-                      {(ticket.status || "").toUpperCase() !== "RESOLVED" ? (
-                        <button className={`${styles.btn} ${styles.btnApprove}`} disabled={resolvingTicketId === ticket.ticket_id} onClick={() => handleMarkResolved(ticket.ticket_id, ticket.status)}>
-                          {resolvingTicketId === ticket.ticket_id ? "Resolving…" : "✓ Mark Resolved"}
+                    <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap"}}>
+                      <span>Created: {new Date(ticket.created_at).toLocaleString()}</span>
+                      <span>Updated: {new Date(ticket.updated_at).toLocaleString()}</span>
+                    </div>
+                    <div className={styles.ticketFooterActions}>
+                      {(ticket.status || "").toUpperCase() === "RESOLVED" ? (
+                        <span className={styles.ticketResolvedLabel}>✓ Resolved</span>
+                      ) : resolveDraftTicketId !== ticket.ticket_id && resolvingTicketId !== ticket.ticket_id ? (
+                        <button
+                          type="button"
+                          className={styles.btnResolveConfirm}
+                          disabled={!!resolveDraftTicketId}
+                          onClick={() => handleStartResolve(ticket.ticket_id)}
+                        >
+                          ✓ Mark Resolved
                         </button>
-                      ) : <span style={{ color: "#16a34a", fontSize: "0.82rem", fontWeight: 600 }}>✓ Resolved</span>}
+                      ) : null}
                     </div>
                   </div>
                 </div>

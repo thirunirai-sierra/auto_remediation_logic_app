@@ -401,8 +401,9 @@ export async function fetchPipelineTrace(limit = 20): Promise<{ incidents: unkno
  * Lists support tickets from logging service.
  * @returns {Promise<{ tickets: unknown[] }>} Tickets array.
  */
-export async function fetchTickets(): Promise<{ tickets: unknown[] }> {
-  return request(`${LOG_API_BASE}/api/tickets`);
+export async function fetchTickets(sync = false): Promise<{ tickets: unknown[]; sync?: unknown }> {
+  const qs = sync ? "?sync=true" : "";
+  return request(`${LOG_API_BASE}/api/tickets${qs}`);
 }
 
 /**
