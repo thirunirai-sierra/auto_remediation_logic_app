@@ -343,7 +343,9 @@ async def continuous_monitor(settings):
                 "auto_fix_attempted": True,
                 "auto_fix_success":   (rem_status == "remediated"),
                 "fix_strategy":      fix_strategy,
-                "rca_root_cause":    result.get("root_cause"),
+                "rca_root_cause": (
+                    result.get("exact_issue") or result.get("root_cause")
+                ),
             }
             try:
                 client.upsert_observability_record(update_record)

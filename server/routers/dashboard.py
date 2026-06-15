@@ -54,6 +54,11 @@ async def logs_overview(top: int = Query(1000, ge=1, le=5000)):
         cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE ERROR_MESSAGE IS NOT NULL")
         total_error_messages = cursor.fetchone()[0]
 
+        from routers.observability import _compute_status_summary
+        status_summary = _compute_status_summary(client)
+        in_progress = status_summary["PROCESSING"]
+        pending_approval = status_summary["pending_approval"]
+
         # Status breakdown
         cursor.execute(f"SELECT STATUS, COUNT(*) FROM {table} GROUP BY STATUS ORDER BY COUNT(*) DESC")
         status_breakdown = [{"status": row[0], "count": row[1]} for row in cursor.fetchall()]
@@ -105,6 +110,8 @@ async def logs_overview(top: int = Query(1000, ge=1, le=5000)):
                 "fixed_flows": fixed_flows,
                 "total_logs": total_logs,
                 "total_error_messages": total_error_messages,
+                "in_progress": in_progress,
+                "pending_approval": pending_approval,
             },
             "status_breakdown": status_breakdown,
             "error_distribution": error_distribution,
@@ -140,7 +147,9 @@ async def incidents():
     try:
         cursor = client.conn.cursor()
         cursor.execute(f"""
-            SELECT INCIDENT_ID, SUBSCRIPTION_ID, WORKFLOW_NAME, ERROR_CODE, ERROR_MESSAGE, CREATED_AT
+            SELECT INCIDENT_ID, RUN_ID, SUBSCRIPTION_ID, WORKFLOW_NAME, ERROR_CODE, ERROR_MESSAGE,
+                   STATUS, CREATED_AT, UPDATED_AT, LAST_SEEN, OCCURRENCE_COUNT,
+                   AI_CONFIDENCE, RCA_CONFIDENCE
             FROM {client.full_table}
             ORDER BY CREATED_AT DESC
             LIMIT 500
@@ -148,13 +157,21 @@ async def incidents():
         rows = cursor.fetchall()
         result = []
         for row in rows:
+            ai_conf, rca_conf = row[11], row[12]
+            confidence = ai_conf if ai_conf is not None else rca_conf
+            last_seen = row[9] or row[8] or row[7]
             result.append({
                 "incidentId": row[0],
-                "subscriptionId": row[1],
-                "integrationScenario": row[2],
-                "errorType": row[3],
-                "errorMessage": row[4],
-                "time": row[5].isoformat() if row[5] else None,
+                "runId": row[1],
+                "subscriptionId": row[2],
+                "integrationScenario": row[3],
+                "errorType": row[4],
+                "errorMessage": row[5],
+                "status": row[6],
+                "time": row[7].isoformat() if row[7] else None,
+                "lastSeen": last_seen.isoformat() if last_seen else None,
+                "occurrenceCount": int(row[10] or 1),
+                "rcaConfidence": float(confidence) if confidence is not None else None,
             })
         cursor.close()
         return result

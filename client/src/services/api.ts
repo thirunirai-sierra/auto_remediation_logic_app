@@ -137,23 +137,35 @@ export type MonitorMessagesSummary = {
   RETRY: number;
 };
 
+export type FetchMonitorMessagesOpts = {
+  limit?: number;
+  offset?: number;
+  /** Summary bucket keys: FAILED, SUCCESS, PROCESSING, RETRY */
+  statusGroup?: string[];
+  search?: string;
+};
+
 /**
 * Paginated monitor message list from logging API; includes optional `summary` when server supports it.
-* @param {unknown} [limit=50] - Page size (defaults to 50 if React Query passes a non-number first arg).
-* @param {unknown} [offset=0] - Row offset for pagination.
+* @param {FetchMonitorMessagesOpts | number} [opts=50] - Options object, or legacy page size.
+* @param {number} [legacyOffset=0] - Legacy offset when first arg is a number.
 * @returns {Promise<{ messages: unknown[]; total?: number; summary?: MonitorMessagesSummary }>} List payload.
 */
 export async function fetchMonitorMessages(
-  limit: unknown = 50,
-  offset: unknown = 0,
+  opts: FetchMonitorMessagesOpts | number = 50,
+  legacyOffset = 0,
 ): Promise<{
   messages: unknown[];
   total?: number;
-  summary?: MonitorMessagesSummary;
+  summary?: MonitorMessagesSummary & { pending_approval?: number };
 }> {
-  const l = typeof limit === "number" && Number.isFinite(limit) ? limit : 50;
-  const o = typeof offset === "number" && Number.isFinite(offset) ? offset : 0;
-  const params = new URLSearchParams({ limit: String(l), offset: String(o) });
+  const o: FetchMonitorMessagesOpts =
+    typeof opts === "number" ? { limit: opts, offset: legacyOffset } : opts;
+  const l = typeof o.limit === "number" && Number.isFinite(o.limit) ? o.limit : 50;
+  const off = typeof o.offset === "number" && Number.isFinite(o.offset) ? o.offset : 0;
+  const params = new URLSearchParams({ limit: String(l), offset: String(off) });
+  if (o.statusGroup?.length) params.set("status_group", o.statusGroup.join(","));
+  if (o.search?.trim()) params.set("search", o.search.trim());
   return request(`${LOG_API_BASE}/api/monitor/messages?${params}`);
 }
 
@@ -378,16 +390,18 @@ export async function toggleAutoFix(): Promise<{ auto_fix_enabled: boolean }> {
 * @param {number} [limit=20] - Max messages to return.
 * @returns {Promise<{ incidents: unknown[]; total: number }>} Mapped incidents plus total count.
 */
-export async function fetchPipelineTrace(limit = 20): Promise<{ incidents: unknown[]; total: number }> {
-  const data = await request<{ messages: unknown[]; total: number }>(`${API_BASE}/api/monitor/messages?limit=${limit}`);
-  const incidents = data.messages.map((msg: any) => ({
+export async function fetchPipelineTrace(limit = 200): Promise<{ incidents: unknown[]; total: number }> {
+  const data = await fetchMonitorMessages({ limit, offset: 0 });
+  const incidents = (data.messages as Record<string, unknown>[]).map((msg) => ({
     ...msg,
+    incident_id: msg.message_guid,
     iflow_name: msg.iflow_display,
     error_type: msg.error_type,
     status: msg.status,
+    root_cause: msg.root_cause,
     created_at: msg.log_start,
   }));
-  return { incidents, total: data.total };
+  return { incidents, total: data.total ?? incidents.length };
 }
 
 // ----------------------------------------------------------------------
@@ -610,11 +624,16 @@ export interface PaginatedIncidentsResponse {
 /** Single row shape for log-derived incident summaries. */
 export interface LogIncident {
   incidentId: string | null;
+  runId?: string | null;
   subscriptionId: string | null;
   integrationScenario: string | null;
   errorType: string | null;
   errorMessage: string | null;
+  status?: string | null;
   time: string | null;
+  lastSeen?: string | null;
+  occurrenceCount?: number | null;
+  rcaConfidence?: number | null;
 }
 
 /**

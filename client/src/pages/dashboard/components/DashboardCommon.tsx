@@ -2,6 +2,7 @@
  * @fileoverview Shared dashboard presentation: chart colors, date formatting, status badges,
  * KPI tiles, Recharts legend helper, and skeleton loaders for `OverviewTab`.
  */
+import { STATUS_CONFIG, normalizeStatusKey } from "../../../components/StatusPill.tsx";
 import styles from "../dashboard.module.css";
 
 /** Default slice colors for Recharts pie/bar series (cycled by index). */
@@ -12,6 +13,17 @@ export const CHART_COLORS = ["#ff6b6b", "#4dabf7", "#ffd43b", "#69db7c", "#845ef
  * @param {string | null | undefined} value - Instant from API; empty becomes `"-"`.
  * @returns {string} Locale string (`en-GB`) or original `value` if the date is invalid.
  */
+export function formatRcaConfidence(value: unknown): { label: string; color: string } {
+  if (value == null || value === "") return { label: "-", color: "#94a3b8" };
+  const n = typeof value === "number" ? value : parseFloat(String(value));
+  if (Number.isNaN(n)) return { label: "-", color: "#94a3b8" };
+  const pct = n <= 1 ? n * 100 : n;
+  const label = `${pct.toFixed(0)}%`;
+  if (pct >= 90) return { label, color: "#16a34a" };
+  if (pct >= 70) return { label, color: "#d97706" };
+  return { label, color: "#dc2626" };
+}
+
 export function formatISODate(value: string | null | undefined): string {
   if (!value) return "-";
   const d = new Date(value);
@@ -22,7 +34,7 @@ export function formatISODate(value: string | null | undefined): string {
   });
 }
 
-/** Maps coarse incident status keys to CSS module class names for the active-incidents table. */
+/** Maps coarse incident status keys to CSS module class names (legacy). */
 export const INCIDENT_STATE: Record<string, string> = {
   RCA_COMPLETE: styles.stateSuccess,
   IN_PROGRESS: styles.stateWarning,
@@ -31,35 +43,17 @@ export const INCIDENT_STATE: Record<string, string> = {
   FIX_APPLIED: styles.stateSuccess,
 };
 
-const STATUS_BADGE_STYLES: Record<string, { bg: string; color: string; dot: string; label: string }> = {
-  TICKET_CREATED: { bg: "#f3e8ff", color: "#7c3aed", dot: "#7c3aed", label: "Ticket Created" },
-  ARTIFACT_MISSING: { bg: "#f1f5f9", color: "#64748b", dot: "#94a3b8", label: "Artifact Missing" },
-  RCA_COMPLETED: { bg: "#dcfce7", color: "#16a34a", dot: "#16a34a", label: "RCA Completed" },
-  RCA_COMPLETE: { bg: "#dcfce7", color: "#16a34a", dot: "#16a34a", label: "RCA Completed" },
-  FIX_IN_PROGRESS: { bg: "#fff7ed", color: "#ea580c", dot: "#ea580c", label: "Fix In Progress" },
-  IN_PROGRESS: { bg: "#fff7ed", color: "#ea580c", dot: "#ea580c", label: "Fix In Progress" },
-  FIX_COMPLETED: { bg: "#dcfce7", color: "#16a34a", dot: "#16a34a", label: "Fix Completed" },
-  RCA_IN_PROGRESS: { bg: "#fef3c7", color: "#d97706", dot: "#d97706", label: "RCA In Progress" },
-  FAILED: { bg: "#fee2e2", color: "#dc2626", dot: "#dc2626", label: "Failed" },
-  AUTO_FIXED: { bg: "#dcfce7", color: "#16a34a", dot: "#16a34a", label: "Auto Fixed" },
-  FIX_FAILED: { bg: "#fee2e2", color: "#dc2626", dot: "#dc2626", label: "Fix Failed" },
-  PENDING: { bg: "#f1f5f9", color: "#64748b", dot: "#94a3b8", label: "Pending" },
-};
-
 /**
- * Pill badge for recent-failures table rows: maps API status to colors and human label.
- * @param {object} props - Component props.
- * @param {string} props.status - Status string from API (spaces → underscores for lookup).
- * @returns {JSX.Element} Styled pill or fallback error-styled raw text if unknown status.
+ * Pill badge for dashboard table rows: same color rules as Observability / Pipeline.
  */
 export function StatusBadge({ status }: { status: string }) {
-  const key = status.toUpperCase().replace(/ /g, "_");
-  const style = STATUS_BADGE_STYLES[key];
-  if (!style) return <span className={styles.statusError}>{status}</span>;
+  const key = normalizeStatusKey(status);
+  const cfg = STATUS_CONFIG[key];
+  if (!cfg) return <span className={styles.statusError}>{status}</span>;
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem", padding: "0.2rem 0.6rem", borderRadius: "999px", background: style.bg, color: style.color, fontSize: "0.75rem", fontWeight: 600 }}>
-      <span style={{ width: 6, height: 6, borderRadius: "50%", background: style.dot, flexShrink: 0 }} />
-      {style.label}
+    <span style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem", padding: "0.2rem 0.6rem", borderRadius: "999px", background: cfg.bg, color: cfg.color, fontSize: "0.75rem", fontWeight: 600, whiteSpace: "nowrap" }}>
+      <span style={{ width: 6, height: 6, borderRadius: "50%", background: cfg.dot, flexShrink: 0 }} />
+      {cfg.label}
     </span>
   );
 }

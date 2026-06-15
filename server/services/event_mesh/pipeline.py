@@ -157,7 +157,10 @@ async def _finalize_hana(envelope: PipelineEnvelope) -> None:
         "status": final,
         "auto_fix_attempted": True,
         "auto_fix_success": fix_ok,
-        "rca_root_cause": rca.get("root_cause"),
+        "rca_root_cause": (
+            rca.get("exact_issue") or rca.get("solution") or rca.get("root_cause")
+        ),
+        "ai_diagnosis": rca.get("exact_issue") or rca.get("solution"),
         "fix_strategy": (fixer.get("fix_strategy") or {}).get("strategy_description")
         if isinstance(fixer.get("fix_strategy"), dict)
         else fixer.get("fix_strategy"),

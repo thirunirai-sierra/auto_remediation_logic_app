@@ -1161,6 +1161,62 @@
       "auto_fix_success": false,
       "fix_strategy": null,
       "root_cause": "Null first argument to endsWith"
+    },
+    "08584203434595663086300106700CU07": {
+      "run_id": "08584203434595663086300106700CU07",
+      "workflow_name": "runtime-flow",
+      "attempted_at": "2026-06-12T17:01:43.510540",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-12T17:01:43.510540",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Null content for Parse JSON"
+    },
+    "08584201090198601930384894448CU04": {
+      "run_id": "08584201090198601930384894448CU04",
+      "workflow_name": "runtime-flow",
+      "attempted_at": "2026-06-15T14:50:47.214225",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-15T14:50:47.214225",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Null 'content' passed to Parse JSON"
+    },
+    "08584200913754717298163504036CU14": {
+      "run_id": "08584200913754717298163504036CU14",
+      "workflow_name": "runtime-flow",
+      "attempted_at": "2026-06-15T15:02:37.894925",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-15T15:02:37.894925",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Null content passed to Parse JSON"
+    },
+    "08584200898868921123561101376CU18": {
+      "run_id": "08584200898868921123561101376CU18",
+      "workflow_name": "runtime-flow",
+      "attempted_at": "2026-06-15T15:34:19.727139",
+      "error_type": "bad_request",
+      "status": "attempted",
+      "current_run_status": "unknown",
+      "retry_count": 0,
+      "last_attempt_at": "2026-06-15T15:34:19.727139",
+      "auto_fix_attempted": true,
+      "auto_fix_success": false,
+      "fix_strategy": null,
+      "root_cause": "Null 'Content' passed to Parse JSON"
     }
   },
   "workflow_states": {
@@ -1223,8 +1279,18 @@
       "fix_count": 1,
       "last_fix_strategy": null,
       "last_root_cause": "Invalid For_each items (null/non-array)"
+    },
+    "runtime-flow": {
+      "workflow_name": "runtime-flow",
+      "last_fixed_at": "2026-06-15T15:34:19.727139",
+      "last_fixed_run_id": "08584200898868921123561101376CU18",
+      "error_type_fixed": "bad_request",
+      "workflow_hash": "",
+      "fix_count": 5,
+      "last_fix_strategy": null,
+      "last_root_cause": "Null 'Content' passed to Parse JSON"
     }
   },
   "workflow_hashes": {},
-  "last_updated": "2026-06-09T17:13:49.312392"
+  "last_updated": "2026-06-15T15:34:19.729086"
 }

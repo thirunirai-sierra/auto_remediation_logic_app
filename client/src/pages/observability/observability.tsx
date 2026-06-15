@@ -121,11 +121,38 @@ const STATUS_CONFIG: Record<string, StatusCfg> = {
   PIPELINE_ERROR: { ...RED, label: "Pipeline Error" },
   REJECTED: { ...RED, label: "Rejected" },
   RETRIED: { ...GREEN, label: "Retried" },
+  PIPELINE_STARTED: { ...BLUE, label: "Pipeline Started" },
+  PIPELINE_IN_PROGRESS: { ...BLUE, label: "Pipeline Running" },
+  PIPELINE_OBSERVER: { ...BLUE, label: "Pipeline Observer" },
+  PIPELINE_CLASSIFIER: { ...BLUE, label: "Pipeline Classifier" },
+  PIPELINE_RCA: { ...BLUE, label: "Pipeline RCA" },
+  PIPELINE_FIXER: { ...BLUE, label: "Pipeline Fixer" },
+  PIPELINE_VERIFIER: { ...BLUE, label: "Pipeline Verifier" },
 };
+
+const PROCESSING_STATUSES = [
+  "RCA_IN_PROGRESS", "FIX_IN_PROGRESS", "FIX_APPLIED_PENDING_VERIFICATION", "ANALYZING", "APPROVED",
+  "PIPELINE_STARTED", "PIPELINE_IN_PROGRESS", "PIPELINE_OBSERVER", "PIPELINE_CLASSIFIER",
+  "PIPELINE_RCA", "PIPELINE_FIXER", "PIPELINE_VERIFIER",
+];
+const PROCESSING_STALE_MS = 30 * 60 * 1000;
 
 /** DB/API often returns spaced labels ("Ticket Created"); UI keys are SNAKE_CASE ("TICKET_CREATED"). */
 function normalizeStatusKey(status: string | undefined | null): string {
   return (status ?? "").trim().toUpperCase().replace(/\s+/g, "_");
+}
+
+function isProcessingStatus(status: string | undefined | null): boolean {
+  const key = normalizeStatusKey(status);
+  return PROCESSING_STATUSES.includes(key) || (key.startsWith("PIPELINE_") && key !== "PIPELINE_ERROR");
+}
+
+function isActivelyProcessing(status: string | undefined | null, updatedAt?: string | null): boolean {
+  if (!isProcessingStatus(status)) return false;
+  if (!updatedAt) return true;
+  const ts = new Date(updatedAt).getTime();
+  if (Number.isNaN(ts)) return true;
+  return Date.now() - ts < PROCESSING_STALE_MS;
 }
 
 function StatusPill({ status }: { status: string }) {
@@ -174,7 +201,7 @@ const INITIAL_FILTERS: IFilterState = {
 const CARD_TIPS: Record<string, string> = {
   FAILED: "Messages in FAILED, FIX_FAILED, RCA_FAILED or DETECTED state — need attention",
   SUCCESS: "Messages that reached AUTO_FIXED, HUMAN_FIXED or FIX_VERIFIED state",
-  PROCESSING: "Messages currently in RCA, classification or fix-in-progress stages",
+  PROCESSING: "Incidents actively in the fix pipeline (updated in the last 30 minutes)",
   RETRY: "Messages pending approval, ticket created or scheduled for retry",
 };
 
@@ -201,7 +228,6 @@ const ERROR_TYPE_META: Record<string, ErrorTypeMeta> = {
   WORKFLOW_DEFINITION_ERROR: { label: "Workflow Definition Error", description: "Invalid Logic App workflow JSON — missing required field, unsupported action type, or schema violation.", action: "AUTO_FIX", dot: "#22c55e" },
   AUTH_CONFIG_ERROR: { label: "Auth Config Error", description: "Wrong credential or connection reference inside the workflow — API key, OAuth app registration mismatch.", action: "AUTO_FIX", dot: "#22c55e" },
   HTTP_ERROR: { label: "HTTP Error", description: "HTTP action received a 4xx client error — bad request, wrong endpoint URL, or missing required header.", action: "AUTO_FIX", dot: "#22c55e" },
-  ODATA_ERROR: { label: "OData Error", description: "OData connector action failed — entity set path or query options misconfigured.", action: "AUTO_FIX", dot: "#22c55e" },
   BACKEND_ERROR: { label: "Backend Error", description: "Target service returned HTTP 5xx — the downstream system is down or returning server errors.", action: "TICKET_CREATED", dot: "#ef4444" },
   THROTTLING_ERROR: { label: "Throttling Error", description: "Azure or connector rate limit hit — too many requests in a short window. Infrastructure or retry policy change required.", action: "TICKET_CREATED", dot: "#ef4444" },
   RESOURCE_LIMIT_ERROR: { label: "Resource Limit Error", description: "Logic App run exceeded execution limits (duration, actions, or memory) — workflow redesign required.", action: "TICKET_CREATED", dot: "#ef4444" },
@@ -532,9 +558,17 @@ export default function Observability() {
   const [resolvingTicketId, setResolvingTicketId] = useState<string | null>(null);
   const [ticketActionError, setTicketActionError] = useState<string | null>(null);
 
+  const statusGroupKey = filters.statuses.join(",");
+  const searchKey = filters.searchQuery || filters.idQuery || "";
+
   const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ["monitor-messages"],
-    queryFn: fetchMonitorMessages,
+    queryKey: ["monitor-messages", statusGroupKey, searchKey],
+    queryFn: () => fetchMonitorMessages({
+      limit: 50,
+      offset: 0,
+      statusGroup: filters.statuses.length ? filters.statuses : undefined,
+      search: searchKey || undefined,
+    }),
     refetchInterval: 30_000,
     staleTime: 20_000,
   });
@@ -556,30 +590,15 @@ export default function Observability() {
   const STATUS_GROUP: Record<string, string[]> = {
     FAILED:     ["FAILED", "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME", "RCA_FAILED", "PIPELINE_ERROR", "DETECTED", "ARTIFACT_MISSING"],
     SUCCESS:    ["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "SUCCESS", "HUMAN_INITIATED_FIX", "FIX_DEPLOYED"],
-    PROCESSING: ["RCA_IN_PROGRESS", "FIX_IN_PROGRESS", "FIX_ATTEMPTED", "CLASSIFIED", "RCA_COMPLETE", "FIX_APPLIED_PENDING_VERIFICATION", "PROCESSING"],
+    PROCESSING: PROCESSING_STATUSES,
     RETRY:      ["RETRY", "PENDING_APPROVAL", "TICKET_CREATED", "AWAITING_APPROVAL"],
   };
 
-  // Normalized messages with status filtering (spaces -> underscores)
-  const messages = useMemo(() => {
-    return ((data?.messages || []) as IMonitorMessage[]).filter((m) => {
-      const s = normalizeStatusKey(m.status);
-      if (filters.statuses.length) {
-        const allowed = filters.statuses.flatMap((g) => STATUS_GROUP[g] || [g]);
-        if (!allowed.includes(s)) return false;
-      }
-      if (filters.searchQuery) {
-        const q = filters.searchQuery.toLowerCase();
-        if (!(m.iflow_display || m.title || "").toLowerCase().includes(q)) return false;
-      }
-      if (filters.idQuery) {
-        const q = filters.idQuery.toLowerCase();
-        if (!(m.message_guid || "").toLowerCase().includes(q) &&
-            !(m.iflow_display || "").toLowerCase().includes(q)) return false;
-      }
-      return true;
-    });
-  }, [data, filters]);
+  // Server applies status_group + search; list rows already match active filters.
+  const messages = useMemo(
+    () => ((data?.messages || []) as IMonitorMessage[]),
+    [data],
+  );
 
   // Counts for summary cards (normalized statuses)
   const counts = useMemo(() => {
@@ -599,7 +618,7 @@ export default function Observability() {
       const st = normalizeStatusKey(m.status);
       if (["FAILED", "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME", "RCA_FAILED", "PIPELINE_ERROR", "DETECTED", "ARTIFACT_MISSING"].includes(st)) result.FAILED++;
       else if (["AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "SUCCESS", "HUMAN_INITIATED_FIX", "FIX_DEPLOYED"].includes(st)) result.SUCCESS++;
-      else if (["RCA_IN_PROGRESS", "FIX_IN_PROGRESS", "FIX_ATTEMPTED", "CLASSIFIED", "RCA_COMPLETE", "FIX_APPLIED_PENDING_VERIFICATION", "PROCESSING"].includes(st)) result.PROCESSING++;
+      else if (isActivelyProcessing(m.status, m.updatedAt)) result.PROCESSING++;
       else if (["RETRY", "PENDING_APPROVAL", "TICKET_CREATED", "AWAITING_APPROVAL"].includes(st)) result.RETRY++;
     });
     return result;
@@ -1616,7 +1635,7 @@ export default function Observability() {
               {approvals.map((approval) => (
                 <div key={approval.incident_id} className={styles.approvalCard}>
                   <div className={styles.approvalHeader}>
-                    <div><h3>{approval.iflow_id}</h3><span className={styles.approvalId}>Incident: {approval.incident_id}</span></div>
+                    <div><h3>{approval.iflow_id}</h3><span className={styles.approvalId}>{approval.incident_id}</span></div>
                     <StatusPill status={approval.status} />
                   </div>
                   <div className={styles.approvalBody}>
@@ -1624,18 +1643,20 @@ export default function Observability() {
                     <div className={styles.approvalSection}><strong>Error Message:</strong><p className={styles.errorText}>{approval.error_message}</p></div>
                     <div className={styles.approvalSection}><strong>Root Cause:</strong><p>{approval.root_cause}</p></div>
                     <div className={styles.approvalSection}><strong>Proposed Fix:</strong><p className={styles.fixText}>{approval.proposed_fix}</p></div>
+                  </div>
+                  <div className={styles.approvalFooter}>
                     <div className={styles.approvalMeta}>
                       <span><strong>Confidence:</strong> {((approval.rca_confidence ?? 0) * 100).toFixed(0)}%</span>
                       <span><strong>Created:</strong> {approval.created_at ? new Date(approval.created_at).toLocaleString() : "—"}</span>
                       <span><strong>Pending Since:</strong> {approval.pending_since ? new Date(approval.pending_since).toLocaleString() : "—"}</span>
                     </div>
+                    {approval.status === "AWAITING_APPROVAL" && (
+                      <div className={styles.approvalActions}>
+                        <button type="button" className={`${styles.btn} ${styles.btnApprove}`} onClick={() => handleApprove(approval.incident_id)}>✓ Approve</button>
+                        <button type="button" className={`${styles.btn} ${styles.btnReject}`} onClick={() => handleReject(approval.incident_id)}>✗ Reject</button>
+                      </div>
+                    )}
                   </div>
-                  {approval.status === "AWAITING_APPROVAL" && (
-                    <div className={styles.approvalActions}>
-                      <button className={`${styles.btn} ${styles.btnApprove}`} onClick={() => handleApprove(approval.incident_id)}>✓ Approve</button>
-                      <button className={`${styles.btn} ${styles.btnReject}`} onClick={() => handleReject(approval.incident_id)}>✗ Reject</button>
-                    </div>
-                  )}
                 </div>
               ))}
             </div>

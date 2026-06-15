@@ -39,6 +39,141 @@ class RejectIncidentRequest(BaseModel):
     comment: Optional[str] = None
     reason: Optional[str] = None
 
+_PIPELINE_IN_FLIGHT_STATUSES = (
+    "PIPELINE_IN_PROGRESS", "PIPELINE_STARTED", "PIPELINE_OBSERVER",
+    "PIPELINE_CLASSIFIER", "PIPELINE_RCA", "PIPELINE_FIXER", "PIPELINE_VERIFIER",
+    "FIX_IN_PROGRESS",
+)
+# Broad set (pipeline guards, etc.)
+_IN_PROGRESS_STATUSES = _PIPELINE_IN_FLIGHT_STATUSES + (
+    "RCA_IN_PROGRESS", "FIX_ATTEMPTED", "CLASSIFIED", "RCA_COMPLETE",
+    "FIX_APPLIED_PENDING_VERIFICATION", "PROCESSING", "ANALYZING", "APPROVED",
+)
+# KPI/list: only statuses that mean a fix is actively running, updated recently.
+_ACTIVE_PROCESSING_STATUSES = _PIPELINE_IN_FLIGHT_STATUSES + (
+    "RCA_IN_PROGRESS", "FIX_APPLIED_PENDING_VERIFICATION", "ANALYZING", "APPROVED",
+)
+_PROCESSING_STALE_MINUTES = 30
+_FAILED_STATUSES = frozenset({
+    "FAILED", "FIX_FAILED", "FIX_FAILED_UPDATE", "FIX_FAILED_DEPLOY", "FIX_FAILED_RUNTIME",
+    "RCA_FAILED", "PIPELINE_ERROR", "DETECTED", "ARTIFACT_MISSING", "REJECTED",
+})
+_SUCCESS_STATUSES = frozenset({
+    "AUTO_FIXED", "HUMAN_FIXED", "FIX_VERIFIED", "RETRIED", "SUCCESS",
+    "HUMAN_INITIATED_FIX", "FIX_DEPLOYED",
+})
+_RETRY_STATUSES = frozenset({
+    "RETRY", "PENDING_APPROVAL", "TICKET_CREATED", "AWAITING_APPROVAL",
+})
+
+
+def _normalize_status_key(status: Optional[str]) -> str:
+    return (status or "").strip().upper().replace(" ", "_")
+
+
+def _is_processing_status_key(status_key: str) -> bool:
+    return status_key in _IN_PROGRESS_STATUSES or (
+        status_key.startswith("PIPELINE_") and status_key != "PIPELINE_ERROR"
+    )
+
+
+def _status_in_set_sql(statuses: tuple) -> str:
+    placeholders = ", ".join("?" for _ in statuses)
+    return f"REPLACE(UPPER(TRIM(STATUS)), ' ', '_') IN ({placeholders})"
+
+
+def _active_processing_params() -> tuple[list, int]:
+    return list(_ACTIVE_PROCESSING_STATUSES), -_PROCESSING_STALE_MINUTES * 60
+
+
+def _active_processing_predicate() -> str:
+    """SQL fragment: in-flight status AND updated within the stale window."""
+    return (
+        f"(({_status_in_set_sql(_ACTIVE_PROCESSING_STATUSES)} OR "
+        f"(REPLACE(UPPER(TRIM(STATUS)), ' ', '_') LIKE 'PIPELINE_%' "
+        f"AND REPLACE(UPPER(TRIM(STATUS)), ' ', '_') <> 'PIPELINE_ERROR')) "
+        f"AND UPDATED_AT >= ADD_SECONDS(CURRENT_TIMESTAMP, ?))"
+    )
+
+
+def _count_active_processing(client) -> int:
+    statuses, stale_seconds = _active_processing_params()
+    cursor = client.conn.cursor()
+    cursor.execute(
+        f"SELECT COUNT(*) FROM {client.full_table} WHERE {_active_processing_predicate()}",
+        (*statuses, stale_seconds),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    return int(row[0] or 0) if row else 0
+
+
+def _build_status_group_filter(status_group: str) -> tuple[str, list]:
+    """Map summary-bucket names (FAILED, PROCESSING, …) to a SQL predicate."""
+    groups = [g.strip().upper() for g in status_group.split(",") if g.strip()]
+    if not groups:
+        return "", []
+
+    parts: list[str] = []
+    params: list = []
+
+    for group in groups:
+        if group == "PROCESSING":
+            parts.append(_active_processing_predicate())
+            statuses, stale_seconds = _active_processing_params()
+            params.extend(statuses)
+            params.append(stale_seconds)
+        elif group == "FAILED":
+            parts.append(f"({_status_in_set_sql(tuple(_FAILED_STATUSES))})")
+            params.extend(_FAILED_STATUSES)
+        elif group == "SUCCESS":
+            parts.append(f"({_status_in_set_sql(tuple(_SUCCESS_STATUSES))})")
+            params.extend(_SUCCESS_STATUSES)
+        elif group == "RETRY":
+            parts.append(f"({_status_in_set_sql(tuple(_RETRY_STATUSES))})")
+            params.extend(_RETRY_STATUSES)
+        else:
+            parts.append("REPLACE(UPPER(TRIM(STATUS)), ' ', '_') = ?")
+            params.append(group)
+
+    return f"({' OR '.join(parts)})", params
+
+
+def _format_root_cause_for_display(rec: dict) -> Optional[str]:
+    """Best available RCA text for list/trace views."""
+    for key in ("RCA_ROOT_CAUSE", "AI_DIAGNOSIS"):
+        val = rec.get(key)
+        if val and str(val).strip():
+            return str(val).strip()
+    err = rec.get("ERROR_MESSAGE")
+    if err and str(err).strip():
+        return str(err).strip()[:2000]
+    return None
+
+
+def _compute_status_summary(client) -> dict:
+    """Aggregate incident counts into Observability/Dashboard KPI buckets."""
+    cursor = client.conn.cursor()
+    cursor.execute(f"SELECT STATUS, COUNT(*) FROM {client.full_table} GROUP BY STATUS")
+    rows = cursor.fetchall()
+    cursor.close()
+
+    buckets = {"FAILED": 0, "SUCCESS": 0, "PROCESSING": 0, "RETRY": 0, "pending_approval": 0}
+    for status, count in rows:
+        st = _normalize_status_key(status)
+        n = int(count or 0)
+        if st in _FAILED_STATUSES:
+            buckets["FAILED"] += n
+        elif st in _SUCCESS_STATUSES:
+            buckets["SUCCESS"] += n
+        elif st in _RETRY_STATUSES:
+            buckets["RETRY"] += n
+        if st == "AWAITING_APPROVAL":
+            buckets["pending_approval"] += n
+    buckets["PROCESSING"] = _count_active_processing(client)
+    return buckets
+
+
 def get_hana_client():
     """Return the singleton HANA client."""
     return get_global_client()
@@ -50,6 +185,10 @@ async def get_monitor_messages(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     status: Optional[str] = Query(None),
+    status_group: Optional[str] = Query(
+        None,
+        description="Comma-separated summary buckets: FAILED, SUCCESS, PROCESSING, RETRY",
+    ),
     search: Optional[str] = Query(None),
 ):
     """
@@ -58,11 +197,12 @@ async def get_monitor_messages(
     Args:
         limit: Max number of records to return.
         offset: Number of records to skip.
-        status: Filter by status (case‑insensitive).
-        search: Search in workflow name or error message.
+        status: Filter by exact status (case‑insensitive).
+        status_group: Filter by KPI bucket(s) using the same rules as summary cards.
+        search: Search workflow name, incident id, or error message.
 
     Returns:
-        dict: Contains 'messages' list and 'total' count.
+        dict: Contains 'messages' list, 'total' count, and 'summary' KPI buckets.
     """
     client = get_hana_client()
     if not client or not client._ensure_connected():
@@ -71,11 +211,17 @@ async def get_monitor_messages(
     cursor = client.conn.cursor()
     conditions = []
     params = []
-    if status and status.upper() != "ALL":
-        conditions.append("UPPER(STATUS) = ?")
-        params.append(status.upper())
+    if status_group:
+        group_clause, group_params = _build_status_group_filter(status_group)
+        if group_clause:
+            conditions.append(group_clause)
+            params.extend(group_params)
+    elif status and status.upper() != "ALL":
+        conditions.append("REPLACE(UPPER(TRIM(STATUS)), ' ', '_') = ?")
+        params.append(_normalize_status_key(status))
     if search:
-        conditions.append("(WORKFLOW_NAME LIKE ? OR ERROR_MESSAGE LIKE ?)")
+        conditions.append("(WORKFLOW_NAME LIKE ? OR ERROR_MESSAGE LIKE ? OR INCIDENT_ID LIKE ?)")
+        params.append(f"%{search}%")
         params.append(f"%{search}%")
         params.append(f"%{search}%")
 
@@ -86,7 +232,7 @@ async def get_monitor_messages(
 
     data_sql = f"""
         SELECT INCIDENT_ID, WORKFLOW_NAME, STATUS, ERROR_CATEGORY, CREATED_AT, UPDATED_AT,
-               ERROR_MESSAGE, RCA_ROOT_CAUSE
+               ERROR_MESSAGE, RCA_ROOT_CAUSE, AI_DIAGNOSIS
         FROM {client.full_table}
         {where}
         ORDER BY CREATED_AT DESC
@@ -106,9 +252,11 @@ async def get_monitor_messages(
             "log_start": d["CREATED_AT"].isoformat() if d["CREATED_AT"] else None,
             "updatedAt": d["UPDATED_AT"].isoformat() if d["UPDATED_AT"] else None,
             "error_type": d["ERROR_CATEGORY"],
-        })  
+            "root_cause": _format_root_cause_for_display(d),
+        })
+    summary = _compute_status_summary(client)
     cursor.close()
-    return {"messages": messages, "total": total}
+    return {"messages": messages, "total": total, "summary": summary}
 
 
 @router.get("/monitor/message/{incident_id}")
@@ -812,7 +960,9 @@ async def get_incidents():
 
     cursor = client.conn.cursor()
     cursor.execute(f"""
-        SELECT INCIDENT_ID, SUBSCRIPTION_ID, WORKFLOW_NAME, ERROR_CODE, ERROR_MESSAGE, CREATED_AT
+        SELECT INCIDENT_ID, RUN_ID, SUBSCRIPTION_ID, WORKFLOW_NAME, ERROR_CODE, ERROR_MESSAGE,
+               STATUS, CREATED_AT, UPDATED_AT, LAST_SEEN, OCCURRENCE_COUNT,
+               AI_CONFIDENCE, RCA_CONFIDENCE
         FROM {client.full_table}
         ORDER BY CREATED_AT DESC
         LIMIT 500
@@ -820,13 +970,21 @@ async def get_incidents():
     rows = cursor.fetchall()
     incidents = []
     for row in rows:
+        ai_conf, rca_conf = row[11], row[12]
+        confidence = ai_conf if ai_conf is not None else rca_conf
+        last_seen = row[9] or row[8] or row[7]
         incidents.append({
             "incidentId": row[0],
-            "subscriptionId": row[1],
-            "integrationScenario": row[2],
-            "errorType": row[3],
-            "errorMessage": row[4],
-            "time": row[5].isoformat() if row[5] else None,
+            "runId": row[1],
+            "subscriptionId": row[2],
+            "integrationScenario": row[3],
+            "errorType": row[4],
+            "errorMessage": row[5],
+            "status": row[6],
+            "time": row[7].isoformat() if row[7] else None,
+            "lastSeen": last_seen.isoformat() if last_seen else None,
+            "occurrenceCount": int(row[10] or 1),
+            "rcaConfidence": float(confidence) if confidence is not None else None,
         })
     cursor.close()
     return incidents
